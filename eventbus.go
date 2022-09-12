@@ -50,22 +50,81 @@ func patternToRegex(p EventNamePattern) *regexp.Regexp {
 	return regexp.MustCompile(pattern + "$")
 }
 
+const defaultQueueSize = 100
+
 type Handler struct {
-	fn        func(Event, time.Time)
-	p         *regexp.Regexp
-	name      string
-	queueSize uint
-	ch        chan eventWithTime
-	stop      chan struct{}
-	done      chan struct{}
+	fn            func(Event, time.Time)
+	p             EventNamePattern
+	re            *regexp.Regexp
+	name          string
+	queueSize     int
+	drain         bool
+	asyncInitOnce sync.Once
+	ch            chan eventWithTime
+	stop          chan struct{}
+	done          chan struct{}
+}
+
+func (h *Handler) Pattern() EventNamePattern {
+	return h.p
 }
 
 func (h *Handler) Name() string {
 	return h.name
 }
 
-func (h *Handler) QueueSize() uint {
+func (h *Handler) QueueSize() int {
 	return h.queueSize
+}
+
+func (h *Handler) asyncInit() {
+	h.asyncInitOnce.Do(func() {
+		h.ch = make(chan eventWithTime, h.queueSize)
+		h.stop = make(chan struct{})
+		h.done = make(chan struct{})
+		go h.processEvents()
+	})
+}
+
+func (h *Handler) processEvents() {
+	defer close(h.done)
+	for {
+		select {
+		case e, ok := <-h.ch:
+			if !ok {
+				return
+			}
+			select {
+			case <-h.stop:
+				return
+			default:
+				h.fn(e.e, e.t)
+			}
+		case <-h.stop:
+			return
+		}
+	}
+}
+
+func (h *Handler) close() {
+	if h.ch == nil {
+		return
+	}
+	f := func() {
+		close(h.ch)
+		if !h.drain {
+			close(h.stop)
+		}
+		<-h.done
+		if h.drain {
+			close(h.stop)
+		}
+	}
+	if h.drain {
+		f()
+	} else {
+		go f()
+	}
 }
 
 type Option func(*Handler)
@@ -76,9 +135,15 @@ func WithName(name string) Option {
 	}
 }
 
-func WithQueueSize(size uint) Option {
+func WithQueueSize(size int) Option {
 	return func(h *Handler) {
 		h.queueSize = size
+	}
+}
+
+func WithNoDrain() Option {
+	return func(h *Handler) {
+		h.drain = false
 	}
 }
 
@@ -102,11 +167,7 @@ func (b *Bus) Close() {
 	b.checkClosed()
 	b.closed = true
 	for h := range b.handlers {
-		close(h.ch)
-	}
-	for h := range b.handlers {
-		<-h.done
-		close(h.stop)
+		h.close()
 	}
 }
 
@@ -116,16 +177,14 @@ func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options .
 	b.checkClosed()
 	h := &Handler{
 		fn:        fn,
-		p:         patternToRegex(p),
-		queueSize: 100,
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
+		p:         p,
+		re:        patternToRegex(p),
+		queueSize: defaultQueueSize,
+		drain:     true,
 	}
 	for _, opt := range options {
 		opt(h)
 	}
-	h.ch = make(chan eventWithTime, h.queueSize)
-	go b.processEvents(h)
 	b.handlers[h] = struct{}{}
 	b.subscribeAll(h)
 	return h
@@ -133,21 +192,36 @@ func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options .
 
 func (b *Bus) Unsubscribe(h *Handler) {
 	b.m.Lock()
-	defer b.m.Unlock()
-	close(h.ch)
-	close(h.stop)
-	<-h.done
 	delete(b.handlers, h)
 	for _, handlers := range b.events {
 		delete(handlers, h)
 	}
+	b.m.Unlock()
+	h.close()
 }
 
-func (b *Bus) Publish(e Event) {
+func (b *Bus) PublishAsync(e Event) {
 	b.m.Lock()
 	defer b.m.Unlock()
 	b.checkClosed()
-	b.publish(e)
+	b.publishAsync(e)
+}
+
+func (b *Bus) PublishSync(e Event) {
+	b.m.Lock()
+	name := e.Name()
+	b.checkNewEvent(name)
+	handlers := make([]*Handler, len(b.events[name]))
+	i := 0
+	for h := range b.events[name] {
+		handlers[i] = h
+		i++
+	}
+	b.m.Unlock()
+	t := time.Now()
+	for _, h := range handlers {
+		h.fn(e, t)
+	}
 }
 
 func (b *Bus) checkClosed() {
@@ -157,7 +231,7 @@ func (b *Bus) checkClosed() {
 }
 
 func (b *Bus) subscribe(n EventName, h *Handler) {
-	if !h.p.MatchString(string(n)) {
+	if !h.re.MatchString(string(n)) {
 		return
 	}
 	m := b.events[n]
@@ -174,36 +248,26 @@ func (b *Bus) subscribeAll(h *Handler) {
 	}
 }
 
-func (b *Bus) processEvents(h *Handler) {
-	defer close(h.done)
-	for {
-		select {
-		case e, ok := <-h.ch:
-			if !ok {
-				return
-			}
-			h.fn(e.e, e.t)
-		case <-h.stop:
-			return
-		}
-	}
-}
-
-func (b *Bus) publish(e Event) {
-	name := e.Name()
+func (b *Bus) checkNewEvent(name EventName) {
 	if _, ok := b.events[name]; !ok {
 		b.events[name] = nil
 		for h := range b.handlers {
 			b.subscribe(name, h)
 		}
 	}
+}
+
+func (b *Bus) publishAsync(e Event) {
+	name := e.Name()
+	b.checkNewEvent(name)
 	now := time.Now()
 	for h := range b.events[name] {
+		h.asyncInit()
 		select {
 		case h.ch <- eventWithTime{now, e}:
 		default:
 			if _, ok := e.(Dropped); !ok {
-				b.publish(Dropped{h, now, e})
+				b.publishAsync(Dropped{h, now, e})
 			}
 		}
 	}
