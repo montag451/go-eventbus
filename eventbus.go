@@ -215,6 +215,15 @@ func (b *Bus) PublishAsync(e Event) {
 
 func (b *Bus) PublishSync(e Event) {
 	b.mu.Lock()
+	func() {
+		defer func() {
+			if e := recover(); e != nil {
+				b.mu.Unlock()
+				panic(e)
+			}
+		}()
+		b.checkClosed()
+	}()
 	name := e.Name()
 	b.checkNewEvent(name)
 	handlers := make([]*Handler, len(b.events[name]))
