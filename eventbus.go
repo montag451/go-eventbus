@@ -1,3 +1,7 @@
+// Package eventbus provides a simple event bus implementation.
+//
+// The event bus provided by this package supports asynchronous and
+// synchronous publishing and wildcard subscription.
 package eventbus
 
 import (
@@ -8,10 +12,15 @@ import (
 )
 
 type (
-	EventName        string
+	// EventName represents the name of an event
+	EventName string
+	// EventName represents a pattern to match against event names. A
+	// pattern can contain wildcard.
 	EventNamePattern string
 )
 
+// Event is the interface implemented by all events that are published
+// on the bus.
 type Event interface {
 	Name() EventName
 }
@@ -21,12 +30,19 @@ type eventWithTime struct {
 	e Event
 }
 
+// Dropped is the event published internally by the bus to signal that
+// an event has been dropped. This event occurs only when an event is
+// published asynchronously and the handler queue is full. Dropped
+// events can themselves be dropped (no Dropped event is generated in
+// this case) if a handler queue is full.
 type Dropped struct {
 	Handler   *Handler
 	EventTime time.Time
 	Event     Event
 }
 
+// Name returns the string "_bus.dropped" which is the name of the
+// Dropped event.
 func (Dropped) Name() EventName {
 	return "_bus.dropped"
 }
@@ -52,6 +68,7 @@ func patternToRegex(p EventNamePattern) *regexp.Regexp {
 
 const defaultQueueSize = 100
 
+// Handler represents a subscription to some events.
 type Handler struct {
 	mu        sync.Mutex
 	fn        func(Event, time.Time)
@@ -65,14 +82,17 @@ type Handler struct {
 	done      chan struct{}
 }
 
+// Pattern returns the handler pattern.
 func (h *Handler) Pattern() EventNamePattern {
 	return h.p
 }
 
+// Name returns the handler name.
 func (h *Handler) Name() string {
 	return h.name
 }
 
+// QueueSize returns the handler queue size.
 func (h *Handler) QueueSize() int {
 	return h.queueSize
 }
@@ -133,14 +153,17 @@ func (h *Handler) processEvents() {
 	}
 }
 
+// Option configures a Handler as returned by Subscribe.
 type Option func(*Handler)
 
+// WithName sets the name of the handler.
 func WithName(name string) Option {
 	return func(h *Handler) {
 		h.name = name
 	}
 }
 
+// WithQueueSize sets the queue size of the handler.
 func WithQueueSize(size int) Option {
 	return func(h *Handler) {
 		if size <= 0 {
@@ -150,12 +173,16 @@ func WithQueueSize(size int) Option {
 	}
 }
 
+// WithNoDrain prevents Close and Unsubscribe to drain the handler
+// event queue before returning.
 func WithNoDrain() Option {
 	return func(h *Handler) {
 		h.drain = false
 	}
 }
 
+// Bus represents an event bus. A Bus is safe for use by multiple
+// goroutines simultaneously.
 type Bus struct {
 	mu       sync.Mutex
 	closed   bool
@@ -163,6 +190,7 @@ type Bus struct {
 	events   map[EventName]map[*Handler]struct{}
 }
 
+// New creates a new event bus, ready to be used.
 func New() *Bus {
 	return &Bus{
 		handlers: make(map[*Handler]struct{}),
@@ -170,6 +198,9 @@ func New() *Bus {
 	}
 }
 
+// Close closes the event bus. It drains the event queue of all
+// handlers that has not been registered with the WithNoDrain option
+// before returning. Calling any method on a closed bus will panic.
 func (b *Bus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -180,6 +211,8 @@ func (b *Bus) Close() {
 	}
 }
 
+// Subscribe subscribes to all events matching the given pattern. It
+// returns a Handler instance representing the subscription.
 func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options ...Option) *Handler {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -199,6 +232,10 @@ func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options .
 	return h
 }
 
+// Unsubscribe unsubscribes the given handler for all events matching
+// the handler pattern. It drains the handler event queue before
+// returning if the given handler has not been registered with the
+// WithNoDrain option.
 func (b *Bus) Unsubscribe(h *Handler) {
 	b.mu.Lock()
 	delete(b.handlers, h)
@@ -209,6 +246,11 @@ func (b *Bus) Unsubscribe(h *Handler) {
 	h.asyncClose()
 }
 
+// PublishAsync publishes an event asynchronously. It returns as soon
+// as the event has been put in the event queue of all the handlers
+// subscribed to the event. If the event queue of a handler is full,
+// the event is dropped for this handler and a Dropped event is
+// generated.
 func (b *Bus) PublishAsync(e Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -216,6 +258,9 @@ func (b *Bus) PublishAsync(e Event) {
 	b.publishAsync(e)
 }
 
+// PublishSync publishes an event synchronously. It returns when the
+// event has been processed by all the handlers subscribed to the
+// event.
 func (b *Bus) PublishSync(e Event) {
 	b.mu.Lock()
 	func() {
@@ -242,12 +287,14 @@ func (b *Bus) PublishSync(e Event) {
 	}
 }
 
+// checkClosed must be called with the lock held.
 func (b *Bus) checkClosed() {
 	if b.closed {
 		panic("closed bus")
 	}
 }
 
+// subscribe must be called with the lock held.
 func (b *Bus) subscribe(n EventName, h *Handler) {
 	if !h.re.MatchString(string(n)) {
 		return
@@ -260,12 +307,14 @@ func (b *Bus) subscribe(n EventName, h *Handler) {
 	m[h] = struct{}{}
 }
 
+// subscribeAll must be called with the lock held.
 func (b *Bus) subscribeAll(h *Handler) {
 	for n := range b.events {
 		b.subscribe(n, h)
 	}
 }
 
+// checkNewEvent must be called with the lock held.
 func (b *Bus) checkNewEvent(name EventName) {
 	if _, ok := b.events[name]; !ok {
 		b.events[name] = nil
@@ -275,6 +324,7 @@ func (b *Bus) checkNewEvent(name EventName) {
 	}
 }
 
+// publishAsync must be called with the lock held.
 func (b *Bus) publishAsync(e Event) {
 	name := e.Name()
 	b.checkNewEvent(name)
