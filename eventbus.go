@@ -143,6 +143,9 @@ func WithName(name string) Option {
 
 func WithQueueSize(size int) Option {
 	return func(h *Handler) {
+		if size <= 0 {
+			size = 1
+		}
 		h.queueSize = size
 	}
 }
