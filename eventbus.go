@@ -53,16 +53,16 @@ func patternToRegex(p EventNamePattern) *regexp.Regexp {
 const defaultQueueSize = 100
 
 type Handler struct {
-	fn            func(Event, time.Time)
-	p             EventNamePattern
-	re            *regexp.Regexp
-	name          string
-	queueSize     int
-	drain         bool
-	asyncInitOnce sync.Once
-	ch            chan eventWithTime
-	stop          chan struct{}
-	done          chan struct{}
+	mu        sync.Mutex
+	fn        func(Event, time.Time)
+	p         EventNamePattern
+	re        *regexp.Regexp
+	name      string
+	queueSize int
+	drain     bool
+	ch        chan eventWithTime
+	stop      chan struct{}
+	done      chan struct{}
 }
 
 func (h *Handler) Pattern() EventNamePattern {
@@ -78,12 +78,39 @@ func (h *Handler) QueueSize() int {
 }
 
 func (h *Handler) asyncInit() {
-	h.asyncInitOnce.Do(func() {
-		h.ch = make(chan eventWithTime, h.queueSize)
-		h.stop = make(chan struct{})
-		h.done = make(chan struct{})
-		go h.processEvents()
-	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.ch != nil {
+		return
+	}
+	h.ch = make(chan eventWithTime, h.queueSize)
+	h.stop = make(chan struct{})
+	h.done = make(chan struct{})
+	go h.processEvents()
+}
+
+func (h *Handler) asyncClose() {
+	f := func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.ch == nil {
+			return
+		}
+		close(h.ch)
+		if !h.drain {
+			close(h.stop)
+		}
+		<-h.done
+		if h.drain {
+			close(h.stop)
+		}
+		h.ch = nil
+	}
+	if h.drain {
+		f()
+	} else {
+		go f()
+	}
 }
 
 func (h *Handler) processEvents() {
@@ -103,27 +130,6 @@ func (h *Handler) processEvents() {
 		case <-h.stop:
 			return
 		}
-	}
-}
-
-func (h *Handler) close() {
-	if h.ch == nil {
-		return
-	}
-	f := func() {
-		close(h.ch)
-		if !h.drain {
-			close(h.stop)
-		}
-		<-h.done
-		if h.drain {
-			close(h.stop)
-		}
-	}
-	if h.drain {
-		f()
-	} else {
-		go f()
 	}
 }
 
@@ -167,7 +173,7 @@ func (b *Bus) Close() {
 	b.checkClosed()
 	b.closed = true
 	for h := range b.handlers {
-		h.close()
+		h.asyncClose()
 	}
 }
 
@@ -197,7 +203,7 @@ func (b *Bus) Unsubscribe(h *Handler) {
 		delete(handlers, h)
 	}
 	b.m.Unlock()
-	h.close()
+	h.asyncClose()
 }
 
 func (b *Bus) PublishAsync(e Event) {
