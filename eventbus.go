@@ -154,7 +154,7 @@ func WithNoDrain() Option {
 }
 
 type Bus struct {
-	m        sync.Mutex
+	mu       sync.Mutex
 	closed   bool
 	handlers map[*Handler]struct{}
 	events   map[EventName]map[*Handler]struct{}
@@ -168,8 +168,8 @@ func New() *Bus {
 }
 
 func (b *Bus) Close() {
-	b.m.Lock()
-	defer b.m.Unlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.checkClosed()
 	b.closed = true
 	for h := range b.handlers {
@@ -178,8 +178,8 @@ func (b *Bus) Close() {
 }
 
 func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options ...Option) *Handler {
-	b.m.Lock()
-	defer b.m.Unlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.checkClosed()
 	h := &Handler{
 		fn:        fn,
@@ -197,24 +197,24 @@ func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options .
 }
 
 func (b *Bus) Unsubscribe(h *Handler) {
-	b.m.Lock()
+	b.mu.Lock()
 	delete(b.handlers, h)
 	for _, handlers := range b.events {
 		delete(handlers, h)
 	}
-	b.m.Unlock()
+	b.mu.Unlock()
 	h.asyncClose()
 }
 
 func (b *Bus) PublishAsync(e Event) {
-	b.m.Lock()
-	defer b.m.Unlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.checkClosed()
 	b.publishAsync(e)
 }
 
 func (b *Bus) PublishSync(e Event) {
-	b.m.Lock()
+	b.mu.Lock()
 	name := e.Name()
 	b.checkNewEvent(name)
 	handlers := make([]*Handler, len(b.events[name]))
@@ -223,7 +223,7 @@ func (b *Bus) PublishSync(e Event) {
 		handlers[i] = h
 		i++
 	}
-	b.m.Unlock()
+	b.mu.Unlock()
 	t := time.Now()
 	for _, h := range handlers {
 		h.fn(e, t)
