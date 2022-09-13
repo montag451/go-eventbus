@@ -23,8 +23,8 @@ type eventWithTime struct {
 
 type Dropped struct {
 	Handler   *Handler
-	eventTime time.Time
-	event     Event
+	EventTime time.Time
+	Event     Event
 }
 
 func (Dropped) Name() EventName {
