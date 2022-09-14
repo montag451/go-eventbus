@@ -246,6 +246,15 @@ func (b *Bus) Unsubscribe(h *Handler) {
 	h.asyncClose()
 }
 
+// HasSubscribers returns true if the given event name has subscribers
+// otherwise it returns false.
+func (b *Bus) HasSubscribers(name EventName) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.checkNewEvent(name)
+	return len(b.events[name]) > 0
+}
+
 // PublishAsync publishes an event asynchronously. It returns as soon
 // as the event has been put in the event queue of all the handlers
 // subscribed to the event. If the event queue of a handler is full,
