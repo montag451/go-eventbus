@@ -208,7 +208,28 @@ func New() *Bus {
 
 // Close closes the event bus. It drains the event queue of all
 // handlers that has not been registered with the WithNoDrain option
-// before returning. Calling any method on a closed bus will panic.
+// before returning. Calling any method on a closed bus will
+// panic. Calling Close in a handler which has not been registered
+// with the WithNoDrain option will deadlock if the callback is
+// invoked to process an event asynchronously. For example:
+//
+//	b := eventbus.New()
+//	var h *eventbus.Handler
+//	h = b.Subscribe("foo", func(Event, time.Time) {
+//		b.Close(b)
+//	})
+//	b.PublishAsync(FooEvent{})
+//
+// will deadlock while:
+//
+//	b := eventbus.New()
+//	var h *eventbus.Handler
+//	h = b.Subscribe("foo", func(Event, time.Time) {
+//		b.Close(b)
+//	}, WithNoDrain())
+//	b.PublishAsync(FooEvent{})
+//
+// will not.
 func (b *Bus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -243,7 +264,28 @@ func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options .
 // Unsubscribe unsubscribes the given handler for all events matching
 // the handler pattern. It drains the handler event queue before
 // returning if the given handler has not been registered with the
-// WithNoDrain option.
+// WithNoDrain option. Calling Unsubscribe from the handler callback
+// will result in a deadlock if the handler has not been registered
+// with the WithNoDrain option and the callback is invoked to process
+// an event asynchronously. For example:
+//
+//	b := eventbus.New()
+//	var h *eventbus.Handler
+//	h = b.Subscribe("foo", func(Event, time.Time) {
+//		b.Unsubscribe(h)
+//	})
+//	b.PublishAsync(FooEvent{})
+//
+// will deadlock while:
+//
+//	b := eventbus.New()
+//	var h *eventbus.Handler
+//	h = b.Subscribe("foo", func(Event, time.Time) {
+//		b.Unsubscribe(h)
+//	}, WithNoDrain())
+//	b.PublishAsync(FooEvent{})
+//
+// will not.
 func (b *Bus) Unsubscribe(h *Handler) {
 	b.mu.Lock()
 	b.unsubscribe(h)
