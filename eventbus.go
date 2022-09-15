@@ -71,6 +71,7 @@ const defaultQueueSize = 100
 // Handler represents a subscription to some events.
 type Handler struct {
 	mu        sync.Mutex
+	callOnce  bool
 	fn        func(Event, time.Time)
 	p         EventNamePattern
 	re        *regexp.Regexp
@@ -181,6 +182,13 @@ func WithNoDrain() Option {
 	}
 }
 
+// WithCallOnce ensures that the handler will be called only once
+func WithCallOnce() Option {
+	return func(h *Handler) {
+		h.callOnce = true
+	}
+}
+
 // Bus represents an event bus. A Bus is safe for use by multiple
 // goroutines simultaneously.
 type Bus struct {
@@ -238,10 +246,7 @@ func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options .
 // WithNoDrain option.
 func (b *Bus) Unsubscribe(h *Handler) {
 	b.mu.Lock()
-	delete(b.handlers, h)
-	for _, handlers := range b.events {
-		delete(handlers, h)
-	}
+	b.unsubscribe(h)
 	b.mu.Unlock()
 	h.asyncClose()
 }
@@ -287,6 +292,9 @@ func (b *Bus) PublishSync(e Event) {
 	i := 0
 	for h := range b.events[name] {
 		handlers[i] = h
+		if h.callOnce {
+			b.unsubscribe(h)
+		}
 		i++
 	}
 	b.mu.Unlock()
@@ -323,6 +331,14 @@ func (b *Bus) subscribeAll(h *Handler) {
 	}
 }
 
+// unsubscribe must be called with the lock held.
+func (b *Bus) unsubscribe(h *Handler) {
+	delete(b.handlers, h)
+	for _, handlers := range b.events {
+		delete(handlers, h)
+	}
+}
+
 // checkNewEvent must be called with the lock held.
 func (b *Bus) checkNewEvent(name EventName) {
 	if _, ok := b.events[name]; !ok {
@@ -340,6 +356,9 @@ func (b *Bus) publishAsync(e Event) {
 	now := time.Now()
 	for h := range b.events[name] {
 		h.asyncInit()
+		if h.callOnce {
+			b.unsubscribe(h)
+		}
 		select {
 		case h.ch <- eventWithTime{now, e}:
 		default:
