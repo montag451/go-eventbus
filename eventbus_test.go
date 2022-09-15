@@ -224,6 +224,16 @@ func TestPublish(t *testing.T) {
 		assertNumberOfEvents(t, n, 0)
 		close(wait)
 	})
+	t.Run("CallOnce", func(t *testing.T) {
+		n := 0
+		h := subscribe(t, b, "test.*", func(e Event, t time.Time) {
+			n++
+		}, WithCallOnce())
+		b.PublishSync(TestEvent1{})
+		b.PublishSync(TestEvent1{})
+		b.Unsubscribe(h)
+		assertNumberOfEvents(t, n, 1)
+	})
 }
 
 func TestClose(t *testing.T) {
