@@ -12,10 +12,12 @@ import (
 )
 
 type (
-	// EventName represents the name of an event
+	// EventName represents the name of an event.
 	EventName string
 	// EventNamePattern represents a pattern to match against event
-	// names. A pattern can contain wildcard.
+	// names. Only '*' has a special meaning in a pattern, it matches
+	// any string, including the empty string. To prevent '*' to be
+	// interpreted as a wildcard, it must be escaped.
 	EventNamePattern string
 )
 
