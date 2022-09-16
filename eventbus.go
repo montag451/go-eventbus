@@ -14,8 +14,8 @@ import (
 type (
 	// EventName represents the name of an event
 	EventName string
-	// EventName represents a pattern to match against event names. A
-	// pattern can contain wildcard.
+	// EventNamePattern represents a pattern to match against event
+	// names. A pattern can contain wildcard.
 	EventNamePattern string
 )
 
