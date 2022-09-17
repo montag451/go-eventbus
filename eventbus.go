@@ -228,7 +228,7 @@ func New() *Bus {
 //	var h *eventbus.Handler
 //	h = b.Subscribe("foo", func(Event, time.Time) {
 //		b.Close(b)
-//	}, WithNoDrain())
+//	}, eventbus.WithNoDrain())
 //	b.PublishAsync(FooEvent{})
 //
 // will not.
@@ -284,7 +284,7 @@ func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options .
 //	var h *eventbus.Handler
 //	h = b.Subscribe("foo", func(Event, time.Time) {
 //		b.Unsubscribe(h)
-//	}, WithNoDrain())
+//	}, eventbus.WithNoDrain())
 //	b.PublishAsync(FooEvent{})
 //
 // will not.
