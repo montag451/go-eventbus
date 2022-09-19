@@ -6,6 +6,7 @@ package eventbus
 
 import (
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -27,9 +28,11 @@ type Event interface {
 	Name() EventName
 }
 
-type eventWithTime struct {
-	t time.Time
-	e Event
+type event struct {
+	h    *Handler
+	done chan struct{}
+	t    time.Time
+	e    Event
 }
 
 // Dropped is the event published internally by the bus to signal that
@@ -80,7 +83,7 @@ type Handler struct {
 	name      string
 	queueSize int
 	drain     bool
-	ch        chan eventWithTime
+	ch        chan event
 	stop      chan struct{}
 	done      chan struct{}
 }
@@ -106,7 +109,7 @@ func (h *Handler) asyncInit() {
 	if h.ch != nil {
 		return
 	}
-	h.ch = make(chan eventWithTime, h.queueSize)
+	h.ch = make(chan event, h.queueSize)
 	h.stop = make(chan struct{})
 	h.done = make(chan struct{})
 	go h.processEvents()
@@ -157,17 +160,17 @@ func (h *Handler) processEvents() {
 }
 
 // Option configures a Handler as returned by Subscribe.
-type Option func(*Handler)
+type SubscribeOption func(*Handler)
 
 // WithName sets the name of the handler.
-func WithName(name string) Option {
+func WithName(name string) SubscribeOption {
 	return func(h *Handler) {
 		h.name = name
 	}
 }
 
 // WithQueueSize sets the queue size of the handler.
-func WithQueueSize(size int) Option {
+func WithQueueSize(size int) SubscribeOption {
 	return func(h *Handler) {
 		if size <= 0 {
 			size = 1
@@ -178,17 +181,77 @@ func WithQueueSize(size int) Option {
 
 // WithNoDrain prevents Close and Unsubscribe to drain the handler
 // event queue before returning.
-func WithNoDrain() Option {
+func WithNoDrain() SubscribeOption {
 	return func(h *Handler) {
 		h.drain = false
 	}
 }
 
 // WithCallOnce ensures that the handler will be called only once
-func WithCallOnce() Option {
+func WithCallOnce() SubscribeOption {
 	return func(h *Handler) {
 		h.callOnce = true
 	}
+}
+
+type pool struct {
+	events chan *event
+	stop   chan struct{}
+	wg     sync.WaitGroup
+}
+
+func newPool(size int) *pool {
+	p := &pool{
+		events: make(chan *event),
+		stop:   make(chan struct{}),
+	}
+	for i := 0; i < size; i++ {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			for {
+				select {
+				case e := <-p.events:
+					e.h.fn(e.e, e.t)
+					e.done <- struct{}{}
+				case <-p.stop:
+					return
+				}
+			}
+		}()
+	}
+	return p
+}
+
+func (p *pool) submit(e Event, t time.Time, handlers []*Handler) {
+	done := make(chan struct{})
+	n := len(handlers)
+	for _, h := range handlers {
+		e := &event{
+			h:    h,
+			done: done,
+			e:    e,
+			t:    t,
+		}
+	Loop:
+		for {
+			select {
+			case p.events <- e:
+				break Loop
+			case <-done:
+				n--
+			}
+		}
+	}
+	for n > 0 {
+		<-done
+		n--
+	}
+}
+
+func (p *pool) close() {
+	close(p.stop)
+	p.wg.Wait()
 }
 
 // Bus represents an event bus. A Bus is safe for use by multiple
@@ -196,21 +259,48 @@ func WithCallOnce() Option {
 type Bus struct {
 	mu       sync.Mutex
 	closed   bool
+	pool     *pool
+	poolSize int
+	wg       sync.WaitGroup
 	handlers map[*Handler]struct{}
 	events   map[EventName]map[*Handler]struct{}
 }
 
+// BusOption configures a Bus as returned by New.
+type BusOption func(*Bus)
+
+// WithSyncWorkerPoolSize sets the size of the worker pool used to run
+// event handlers when publishing an event synchronously. If the
+// given size is less than or equal to 1, no worker pool is
+// used, event handlers are run one after the other.
+func WithSyncWorkerPoolSize(size int) BusOption {
+	return func(b *Bus) {
+		if size > 1 {
+			b.poolSize = size
+		}
+	}
+}
+
 // New creates a new event bus, ready to be used.
-func New() *Bus {
-	return &Bus{
+func New(options ...BusOption) *Bus {
+	b := &Bus{
+		poolSize: runtime.NumCPU(),
 		handlers: make(map[*Handler]struct{}),
 		events:   make(map[EventName]map[*Handler]struct{}),
 	}
+	for _, opt := range options {
+		opt(b)
+	}
+	if b.poolSize > 1 {
+		b.pool = newPool(b.poolSize)
+	}
+	return b
 }
 
 // Close closes the event bus. It drains the event queue of all
 // handlers that has not been registered with the WithNoDrain option
-// before returning. Calling any method on a closed bus will
+// before returning. Calling any method (except Close which does
+// nothing if the bus is already closed) on a closed bus will
 // panic. Calling Close in a handler which has not been registered
 // with the WithNoDrain option will deadlock if the callback is
 // invoked to process an event asynchronously. For example:
@@ -235,8 +325,14 @@ func New() *Bus {
 func (b *Bus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.checkClosed()
+	if b.closed {
+		return
+	}
 	b.closed = true
+	b.wg.Wait()
+	if b.pool != nil {
+		b.pool.close()
+	}
 	for h := range b.handlers {
 		h.asyncClose()
 	}
@@ -244,7 +340,7 @@ func (b *Bus) Close() {
 
 // Subscribe subscribes to all events matching the given pattern. It
 // returns a Handler instance representing the subscription.
-func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options ...Option) *Handler {
+func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options ...SubscribeOption) *Handler {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.checkClosed()
@@ -341,10 +437,16 @@ func (b *Bus) PublishSync(e Event) {
 		}
 		i++
 	}
+	b.wg.Add(1)
+	defer b.wg.Done()
 	b.mu.Unlock()
 	t := time.Now()
-	for _, h := range handlers {
-		h.fn(e, t)
+	if b.pool != nil {
+		b.pool.submit(e, t, handlers)
+	} else {
+		for _, h := range handlers {
+			h.fn(e, t)
+		}
 	}
 }
 
@@ -404,7 +506,7 @@ func (b *Bus) publishAsync(e Event) {
 			b.unsubscribe(h)
 		}
 		select {
-		case h.ch <- eventWithTime{now, e}:
+		case h.ch <- event{t: now, e: e}:
 		default:
 			if _, ok := e.(Dropped); !ok {
 				b.publishAsync(Dropped{h, now, e})
