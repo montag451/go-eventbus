@@ -287,6 +287,8 @@ func WithSyncWorkerPoolSize(size int) BusOption {
 	return func(b *Bus) {
 		if size > 1 {
 			b.poolSize = size
+		} else {
+			b.poolSize = 0
 		}
 	}
 }
