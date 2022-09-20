@@ -73,11 +73,18 @@ func patternToRegex(p EventNamePattern) *regexp.Regexp {
 
 const defaultQueueSize = 100
 
+// HandlerFunc is the type of the function called by the bus to
+// process events.
+//
+// The e argument is the event to process.
+// The t argument is the time when the event has been generated.
+type HandlerFunc func(e Event, t time.Time)
+
 // Handler represents a subscription to some events.
 type Handler struct {
 	mu        sync.Mutex
 	callOnce  bool
-	fn        func(Event, time.Time)
+	fn        HandlerFunc
 	p         EventNamePattern
 	re        *regexp.Regexp
 	name      string
@@ -343,7 +350,7 @@ func (b *Bus) Close() {
 
 // Subscribe subscribes to all events matching the given pattern. It
 // returns a Handler instance representing the subscription.
-func (b *Bus) Subscribe(p EventNamePattern, fn func(Event, time.Time), options ...SubscribeOption) *Handler {
+func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...SubscribeOption) *Handler {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.checkClosed()
