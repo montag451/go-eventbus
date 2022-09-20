@@ -270,9 +270,12 @@ type Bus struct {
 type BusOption func(*Bus)
 
 // WithSyncWorkerPoolSize sets the size of the worker pool used to run
-// event handlers when publishing an event synchronously. If the
-// given size is less than or equal to 1, no worker pool is
-// used, event handlers are run one after the other.
+// event handlers when publishing an event synchronously. If the given
+// size is less than or equal to 1, no worker pool is used, event
+// handlers are run one after the other. If this option is not used
+// when creating a bus with New, the default is to use a worker pool
+// with a number of goroutines equal to the number of CPU on the
+// system (if the system have only one CPU, no worker pool is used).
 func WithSyncWorkerPoolSize(size int) BusOption {
 	return func(b *Bus) {
 		if size > 1 {
