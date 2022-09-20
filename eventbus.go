@@ -6,7 +6,6 @@ package eventbus
 
 import (
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -29,10 +28,9 @@ type Event interface {
 }
 
 type event struct {
-	h    *Handler
-	done chan struct{}
 	t    time.Time
 	e    Event
+	done chan struct{}
 }
 
 // Dropped is the event published internally by the bus to signal that
@@ -110,7 +108,7 @@ func (h *Handler) QueueSize() int {
 	return h.queueSize
 }
 
-func (h *Handler) asyncInit() {
+func (h *Handler) init() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.ch != nil {
@@ -122,7 +120,7 @@ func (h *Handler) asyncInit() {
 	go h.processEvents()
 }
 
-func (h *Handler) asyncClose() {
+func (h *Handler) close() {
 	f := func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -159,6 +157,9 @@ func (h *Handler) processEvents() {
 				return
 			default:
 				h.fn(e.e, e.t)
+				if e.done != nil {
+					e.done <- struct{}{}
+				}
 			}
 		case <-h.stop:
 			return
@@ -166,7 +167,7 @@ func (h *Handler) processEvents() {
 	}
 }
 
-// Option configures a Handler as returned by Subscribe.
+// SubscribeOption configures a Handler as returned by Subscribe.
 type SubscribeOption func(*Handler)
 
 // WithName sets the name of the handler.
@@ -201,112 +202,22 @@ func WithCallOnce() SubscribeOption {
 	}
 }
 
-type pool struct {
-	events chan *event
-	stop   chan struct{}
-	wg     sync.WaitGroup
-}
-
-func newPool(size int) *pool {
-	p := &pool{
-		events: make(chan *event),
-		stop:   make(chan struct{}),
-	}
-	for i := 0; i < size; i++ {
-		p.wg.Add(1)
-		go func() {
-			defer p.wg.Done()
-			for {
-				select {
-				case e := <-p.events:
-					e.h.fn(e.e, e.t)
-					e.done <- struct{}{}
-				case <-p.stop:
-					return
-				}
-			}
-		}()
-	}
-	return p
-}
-
-func (p *pool) submit(e Event, t time.Time, handlers []*Handler) {
-	done := make(chan struct{})
-	n := len(handlers)
-	for _, h := range handlers {
-		e := &event{
-			h:    h,
-			done: done,
-			e:    e,
-			t:    t,
-		}
-	Loop:
-		for {
-			select {
-			case p.events <- e:
-				break Loop
-			case <-done:
-				n--
-			}
-		}
-	}
-	for n > 0 {
-		<-done
-		n--
-	}
-}
-
-func (p *pool) close() {
-	close(p.stop)
-	p.wg.Wait()
-}
-
 // Bus represents an event bus. A Bus is safe for use by multiple
 // goroutines simultaneously.
 type Bus struct {
 	mu       sync.Mutex
 	closed   bool
-	pool     *pool
-	poolSize int
 	wg       sync.WaitGroup
 	handlers map[*Handler]struct{}
 	events   map[EventName]map[*Handler]struct{}
 }
 
-// BusOption configures a Bus as returned by New.
-type BusOption func(*Bus)
-
-// WithSyncWorkerPoolSize sets the size of the worker pool used to run
-// event handlers when publishing an event synchronously. If the given
-// size is less than or equal to 1, no worker pool is used, event
-// handlers are run one after the other. If this option is not used
-// when creating a bus with New, the default is to use a worker pool
-// with a number of goroutines equal to the number of CPU on the
-// system (if the system have only one CPU, no worker pool is used).
-func WithSyncWorkerPoolSize(size int) BusOption {
-	return func(b *Bus) {
-		if size > 1 {
-			b.poolSize = size
-		} else {
-			b.poolSize = 0
-		}
-	}
-}
-
 // New creates a new event bus, ready to be used.
-func New(options ...BusOption) *Bus {
-	b := &Bus{
-		poolSize: runtime.NumCPU(),
+func New() *Bus {
+	return &Bus{
 		handlers: make(map[*Handler]struct{}),
 		events:   make(map[EventName]map[*Handler]struct{}),
 	}
-	for _, opt := range options {
-		opt(b)
-	}
-	if b.poolSize > 1 {
-		b.pool = newPool(b.poolSize)
-	}
-	return b
 }
 
 // Close closes the event bus. It drains the event queue of all
@@ -342,11 +253,8 @@ func (b *Bus) Close() {
 	}
 	b.closed = true
 	b.wg.Wait()
-	if b.pool != nil {
-		b.pool.close()
-	}
 	for h := range b.handlers {
-		h.asyncClose()
+		h.close()
 	}
 }
 
@@ -400,7 +308,7 @@ func (b *Bus) Unsubscribe(h *Handler) {
 	b.mu.Lock()
 	b.unsubscribe(h)
 	b.mu.Unlock()
-	h.asyncClose()
+	h.close()
 }
 
 // HasSubscribers returns true if the given event name has subscribers
@@ -428,6 +336,7 @@ func (b *Bus) PublishAsync(e Event) {
 // event has been processed by all the handlers subscribed to the
 // event.
 func (b *Bus) PublishSync(e Event) {
+	t := time.Now()
 	b.mu.Lock()
 	func() {
 		defer func() {
@@ -440,25 +349,37 @@ func (b *Bus) PublishSync(e Event) {
 	}()
 	name := e.Name()
 	b.checkNewEvent(name)
-	handlers := make([]*Handler, len(b.events[name]))
-	i := 0
-	for h := range b.events[name] {
-		handlers[i] = h
+	handlers := b.events[name]
+	n, ack := len(handlers), 0
+	if n == 0 {
+		b.mu.Unlock()
+		return
+	}
+	var busyHandlers []*Handler
+	done := make(chan struct{})
+	defer close(done)
+	for h := range handlers {
+		h.init()
 		if h.callOnce {
 			b.unsubscribe(h)
 		}
-		i++
+		select {
+		case h.ch <- event{t, e, done}:
+		default:
+			busyHandlers = append(busyHandlers, h)
+		}
 	}
 	b.wg.Add(1)
 	defer b.wg.Done()
 	b.mu.Unlock()
-	t := time.Now()
-	if b.pool != nil {
-		b.pool.submit(e, t, handlers)
-	} else {
-		for _, h := range handlers {
-			h.fn(e, t)
-		}
+	for _, h := range busyHandlers {
+		go func(h *Handler) {
+			h.ch <- event{t, e, done}
+		}(h)
+	}
+	for ack < n {
+		<-done
+		ack++
 	}
 }
 
@@ -511,17 +432,17 @@ func (b *Bus) checkNewEvent(name EventName) {
 func (b *Bus) publishAsync(e Event) {
 	name := e.Name()
 	b.checkNewEvent(name)
-	now := time.Now()
+	t := time.Now()
 	for h := range b.events[name] {
-		h.asyncInit()
+		h.init()
 		if h.callOnce {
 			b.unsubscribe(h)
 		}
 		select {
-		case h.ch <- event{t: now, e: e}:
+		case h.ch <- event{t: t, e: e}:
 		default:
 			if _, ok := e.(Dropped); !ok {
-				b.publishAsync(Dropped{h, now, e})
+				b.publishAsync(Dropped{h, t, e})
 			}
 		}
 	}
