@@ -72,8 +72,6 @@ func patternToRegex(p EventNamePattern) *regexp.Regexp {
 
 const defaultQueueSize = 100
 
-var errHandlerClosed = errors.New("handler closed")
-
 // HandlerFunc is the type of the function called by the bus to
 // process events.
 //
@@ -260,6 +258,13 @@ func CallOnce() SubscribeOption {
 	}
 }
 
+var (
+	// ErrClosed is the error returned by all bus methods (except
+	// Close) if called on a closed bus.
+	ErrBusClosed     = errors.New("bus is closed")
+	errHandlerClosed = errors.New("handler is closed")
+)
+
 // Bus represents an event bus. A Bus is safe for use by multiple
 // goroutines simultaneously.
 type Bus struct {
@@ -324,10 +329,12 @@ func (b *Bus) Close() {
 
 // Subscribe subscribes to all events matching the given pattern. It
 // returns a Handler instance representing the subscription.
-func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...SubscribeOption) *Handler {
+func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...SubscribeOption) (*Handler, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.checkClosed()
+	if b.closed {
+		return nil, ErrBusClosed
+	}
 	h := &Handler{
 		fn:        fn,
 		p:         p,
@@ -340,7 +347,7 @@ func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...Subscribe
 	}
 	b.handlers[h] = struct{}{}
 	b.subscribeAll(h)
-	return h
+	return h, nil
 }
 
 // Unsubscribe unsubscribes the given handler for all events matching
@@ -348,21 +355,28 @@ func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...Subscribe
 // handler event queue if the given handler has not been registered
 // with the NoDrain option. When the handler has been drained, the
 // callback set with WithUnsubscribeHandler is called.
-func (b *Bus) Unsubscribe(h *Handler) {
+func (b *Bus) Unsubscribe(h *Handler) error {
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return ErrBusClosed
+	}
 	b.unsubscribe(h)
 	b.mu.Unlock()
 	h.close(nil)
+	return nil
 }
 
 // HasSubscribers returns true if the given event name has subscribers
 // otherwise it returns false.
-func (b *Bus) HasSubscribers(name EventName) bool {
+func (b *Bus) HasSubscribers(name EventName) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.checkClosed()
+	if b.closed {
+		return false, ErrBusClosed
+	}
 	b.checkNewEvent(name)
-	return len(b.events[name]) > 0
+	return len(b.events[name]) > 0, nil
 }
 
 // PublishAsync publishes an event asynchronously. It returns as soon
@@ -370,35 +384,33 @@ func (b *Bus) HasSubscribers(name EventName) bool {
 // subscribed to the event. If the event queue of a handler is full,
 // the event is dropped for this handler and a Dropped event is
 // generated.
-func (b *Bus) PublishAsync(e Event) {
+func (b *Bus) PublishAsync(e Event) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.checkClosed()
+	if b.closed {
+		return ErrBusClosed
+	}
 	b.publishAsync(e)
+	return nil
 }
 
 // PublishSync publishes an event synchronously. It returns when the
 // event has been processed by all the handlers subscribed to the
 // event.
-func (b *Bus) PublishSync(e Event) {
+func (b *Bus) PublishSync(e Event) error {
 	t := time.Now()
 	b.mu.Lock()
-	func() {
-		defer func() {
-			if e := recover(); e != nil {
-				b.mu.Unlock()
-				panic(e)
-			}
-		}()
-		b.checkClosed()
-	}()
+	if b.closed {
+		b.mu.Unlock()
+		return ErrBusClosed
+	}
 	name := e.Name()
 	b.checkNewEvent(name)
 	handlers := b.events[name]
 	n, ack := len(handlers), 0
 	if n == 0 {
 		b.mu.Unlock()
-		return
+		return nil
 	}
 	var busyHandlers []*Handler
 	done := make(chan struct{})
@@ -430,13 +442,7 @@ func (b *Bus) PublishSync(e Event) {
 		<-done
 		ack++
 	}
-}
-
-// checkClosed must be called with the lock held.
-func (b *Bus) checkClosed() {
-	if b.closed {
-		panic("closed bus")
-	}
+	return nil
 }
 
 // subscribe must be called with the lock held.
