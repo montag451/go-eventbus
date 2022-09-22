@@ -5,6 +5,7 @@
 package eventbus
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"sync"
@@ -71,6 +72,8 @@ func patternToRegex(p EventNamePattern) *regexp.Regexp {
 
 const defaultQueueSize = 100
 
+var errHandlerClosed = errors.New("handler closed")
+
 // HandlerFunc is the type of the function called by the bus to
 // process events.
 //
@@ -80,17 +83,20 @@ type HandlerFunc func(e Event, t time.Time)
 
 // Handler represents a subscription to some events.
 type Handler struct {
-	mu        sync.Mutex
-	callOnce  bool
-	fn        HandlerFunc
-	p         EventNamePattern
-	re        *regexp.Regexp
-	name      string
-	queueSize int
-	drain     bool
-	ch        chan event
-	stop      chan struct{}
-	done      chan struct{}
+	mu                 sync.Mutex
+	closed             bool
+	callOnce           bool
+	fn                 HandlerFunc
+	p                  EventNamePattern
+	re                 *regexp.Regexp
+	name               string
+	queueSize          int
+	drain              bool
+	unsubscribeHandler func()
+	syncPubs           sync.WaitGroup
+	ch                 chan event
+	stop               chan struct{}
+	done               chan struct{}
 }
 
 // Pattern returns the handler pattern.
@@ -111,7 +117,7 @@ func (h *Handler) QueueSize() int {
 func (h *Handler) init() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.ch != nil {
+	if h.ch != nil || h.closed {
 		return
 	}
 	h.ch = make(chan event, h.queueSize)
@@ -120,49 +126,95 @@ func (h *Handler) init() {
 	go h.processEvents()
 }
 
-func (h *Handler) close() {
-	f := func() {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if h.ch == nil {
-			return
-		}
-		close(h.ch)
-		if !h.drain {
-			close(h.stop)
-		}
-		<-h.done
-		if h.drain {
-			close(h.stop)
-		}
-		h.ch = nil
+func (h *Handler) publish(e event, sync bool) (published bool, err error) {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		err = errHandlerClosed
+		return
 	}
-	if h.drain {
-		f()
+	if sync {
+		h.syncPubs.Add(1)
+		defer h.syncPubs.Done()
+		h.mu.Unlock()
+		select {
+		case h.ch <- e:
+			published = true
+		case <-h.stop:
+		}
 	} else {
-		go f()
+		select {
+		case h.ch <- e:
+			published = true
+		default:
+		}
+		h.mu.Unlock()
+	}
+	return
+}
+
+func (h *Handler) close(f func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
+	if f == nil {
+		f = h.unsubscribeHandler
+	}
+	if h.ch == nil {
+		if f != nil {
+			go f()
+		}
+		return
+	}
+	close(h.stop)
+	go func() {
+		h.syncPubs.Wait()
+		// At this point the handler is closed and there is no pending
+		// sync publications so we can safely close the channel
+		close(h.ch)
+		<-h.done
+		if f != nil {
+			f()
+		}
+	}()
+}
+
+func (h *Handler) processEvent(e event) {
+	h.fn(e.e, e.t)
+	if e.done != nil {
+		e.done <- struct{}{}
 	}
 }
 
 func (h *Handler) processEvents() {
 	defer close(h.done)
+Loop:
 	for {
 		select {
 		case e, ok := <-h.ch:
 			if !ok {
 				return
 			}
+			h.processEvent(e)
 			select {
 			case <-h.stop:
-				return
+				break Loop
 			default:
-				h.fn(e.e, e.t)
-				if e.done != nil {
-					e.done <- struct{}{}
-				}
 			}
 		case <-h.stop:
-			return
+			break Loop
+		}
+	}
+	for e := range h.ch {
+		switch {
+		case h.drain:
+			h.processEvent(e)
+		case e.done != nil:
+			// Unblock any pending sync publication
+			e.done <- struct{}{}
 		}
 	}
 }
@@ -187,16 +239,22 @@ func WithQueueSize(size int) SubscribeOption {
 	}
 }
 
-// WithNoDrain prevents Close and Unsubscribe to drain the handler
+func WithUnsubscribeHandler(f func()) SubscribeOption {
+	return func(h *Handler) {
+		h.unsubscribeHandler = f
+	}
+}
+
+// NoDrain prevents Close and Unsubscribe to drain the handler
 // event queue before returning.
-func WithNoDrain() SubscribeOption {
+func NoDrain() SubscribeOption {
 	return func(h *Handler) {
 		h.drain = false
 	}
 }
 
-// WithCallOnce ensures that the handler will be called only once
-func WithCallOnce() SubscribeOption {
+// CallOnce ensures that the handler will be called only once
+func CallOnce() SubscribeOption {
 	return func(h *Handler) {
 		h.callOnce = true
 	}
@@ -205,46 +263,38 @@ func WithCallOnce() SubscribeOption {
 // Bus represents an event bus. A Bus is safe for use by multiple
 // goroutines simultaneously.
 type Bus struct {
-	mu       sync.Mutex
-	closed   bool
-	wg       sync.WaitGroup
-	handlers map[*Handler]struct{}
-	events   map[EventName]map[*Handler]struct{}
+	mu            sync.Mutex
+	closed        bool
+	closedHandler func()
+	handlers      map[*Handler]struct{}
+	events        map[EventName]map[*Handler]struct{}
 }
 
-// New creates a new event bus, ready to be used.
-func New() *Bus {
-	return &Bus{
-		handlers: make(map[*Handler]struct{}),
-		events:   make(map[EventName]map[*Handler]struct{}),
+// BusOption configures a Bus as returned by New.
+type BusOption func(*Bus)
+
+func WithClosedHandler(f func()) BusOption {
+	return func(b *Bus) {
+		b.closedHandler = f
 	}
 }
 
-// Close closes the event bus. It drains the event queue of all
-// handlers that has not been registered with the WithNoDrain option
-// before returning. Calling any method (except Close which does
-// nothing if the bus is already closed) on a closed bus will
-// panic. Calling Close in a handler which has not been registered
-// with the WithNoDrain option will deadlock if the callback is
-// invoked to process an event asynchronously. For example:
-//
-//	b := eventbus.New()
-//	var h *eventbus.Handler
-//	h = b.Subscribe("foo", func(Event, time.Time) {
-//		b.Close(b)
-//	})
-//	b.PublishAsync(FooEvent{})
-//
-// will deadlock while:
-//
-//	b := eventbus.New()
-//	var h *eventbus.Handler
-//	h = b.Subscribe("foo", func(Event, time.Time) {
-//		b.Close(b)
-//	}, eventbus.WithNoDrain())
-//	b.PublishAsync(FooEvent{})
-//
-// will not.
+// New creates a new event bus, ready to be used.
+func New(options ...BusOption) *Bus {
+	b := &Bus{
+		handlers: make(map[*Handler]struct{}),
+		events:   make(map[EventName]map[*Handler]struct{}),
+	}
+	for _, opt := range options {
+		opt(b)
+	}
+	return b
+}
+
+// Close closes the event bus and starts draining, in the background,
+// the event queue of all handlers that has not been registered with
+// the NoDrain option. When all the handlers have been drained, the
+// callback set with WithClosedHandler is called.
 func (b *Bus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -252,10 +302,24 @@ func (b *Bus) Close() {
 		return
 	}
 	b.closed = true
-	b.wg.Wait()
-	for h := range b.handlers {
-		h.close()
-	}
+	go func() {
+		n := len(b.handlers)
+		done := make(chan struct{})
+		defer close(done)
+		f := func() {
+			done <- struct{}{}
+		}
+		for h := range b.handlers {
+			h.close(f)
+		}
+		for n > 0 {
+			<-done
+			n--
+		}
+		if b.closedHandler != nil {
+			b.closedHandler()
+		}
+	}()
 }
 
 // Subscribe subscribes to all events matching the given pattern. It
@@ -280,35 +344,15 @@ func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...Subscribe
 }
 
 // Unsubscribe unsubscribes the given handler for all events matching
-// the handler pattern. It drains the handler event queue before
-// returning if the given handler has not been registered with the
-// WithNoDrain option. Calling Unsubscribe from the handler callback
-// will result in a deadlock if the handler has not been registered
-// with the WithNoDrain option and the callback is invoked to process
-// an event asynchronously. For example:
-//
-//	b := eventbus.New()
-//	var h *eventbus.Handler
-//	h = b.Subscribe("foo", func(Event, time.Time) {
-//		b.Unsubscribe(h)
-//	})
-//	b.PublishAsync(FooEvent{})
-//
-// will deadlock while:
-//
-//	b := eventbus.New()
-//	var h *eventbus.Handler
-//	h = b.Subscribe("foo", func(Event, time.Time) {
-//		b.Unsubscribe(h)
-//	}, eventbus.WithNoDrain())
-//	b.PublishAsync(FooEvent{})
-//
-// will not.
+// the handler pattern and starts draining, in the background, the
+// handler event queue if the given handler has not been registered
+// with the NoDrain option. When the handler has been drained, the
+// callback set with WithUnsubscribeHandler is called.
 func (b *Bus) Unsubscribe(h *Handler) {
 	b.mu.Lock()
 	b.unsubscribe(h)
 	b.mu.Unlock()
-	h.close()
+	h.close(nil)
 }
 
 // HasSubscribers returns true if the given event name has subscribers
@@ -316,6 +360,7 @@ func (b *Bus) Unsubscribe(h *Handler) {
 func (b *Bus) HasSubscribers(name EventName) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.checkClosed()
 	b.checkNewEvent(name)
 	return len(b.events[name]) > 0
 }
@@ -363,18 +408,22 @@ func (b *Bus) PublishSync(e Event) {
 		if h.callOnce {
 			b.unsubscribe(h)
 		}
-		select {
-		case h.ch <- event{t, e, done}:
-		default:
-			busyHandlers = append(busyHandlers, h)
+		if ok, err := h.publish(event{t, e, done}, false); !ok {
+			if err == nil {
+				busyHandlers = append(busyHandlers, h)
+			} else {
+				n--
+			}
 		}
 	}
-	b.wg.Add(1)
-	defer b.wg.Done()
 	b.mu.Unlock()
 	for _, h := range busyHandlers {
 		go func(h *Handler) {
-			h.ch <- event{t, e, done}
+			if ok, _ := h.publish(event{t, e, done}, true); !ok {
+				// The event has not been published because the
+				// handler has been unsubscribed in the meantime
+				done <- struct{}{}
+			}
 		}(h)
 	}
 	for ack < n {
@@ -438,9 +487,7 @@ func (b *Bus) publishAsync(e Event) {
 		if h.callOnce {
 			b.unsubscribe(h)
 		}
-		select {
-		case h.ch <- event{t: t, e: e}:
-		default:
+		if ok, err := h.publish(event{t: t, e: e}, false); !ok && err == nil {
 			if _, ok := e.(Dropped); !ok {
 				b.publishAsync(Dropped{h, t, e})
 			}
