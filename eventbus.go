@@ -156,11 +156,11 @@ func (h *Handler) close(f func()) {
 	h.closed = true
 	var f2 func()
 	if f == nil {
-		f2 = h.opts.unsubscribeHandler
+		f2 = h.opts.unsubscribedHandler
 	} else {
 		f2 = func() {
-			if h.opts.unsubscribeHandler != nil {
-				h.opts.unsubscribeHandler()
+			if h.opts.unsubscribedHandler != nil {
+				h.opts.unsubscribedHandler()
 			}
 			f()
 		}
@@ -225,11 +225,11 @@ Loop:
 type SubscribeOption func(*subscribeOptions)
 
 type subscribeOptions struct {
-	name               string
-	queueSize          int
-	unsubscribeHandler func()
-	drain              bool
-	callOnce           bool
+	name                string
+	queueSize           int
+	unsubscribedHandler func()
+	drain               bool
+	callOnce            bool
 }
 
 // WithName sets the name of the handler.
@@ -249,9 +249,9 @@ func WithQueueSize(size int) SubscribeOption {
 	}
 }
 
-func WithUnsubscribeHandler(f func()) SubscribeOption {
+func WithUnsubscribedHandler(f func()) SubscribeOption {
 	return func(opts *subscribeOptions) {
-		opts.unsubscribeHandler = f
+		opts.unsubscribedHandler = f
 	}
 }
 
