@@ -29,9 +29,9 @@ type Event interface {
 }
 
 type event struct {
-	t    time.Time
-	e    Event
-	done chan struct{}
+	t  time.Time
+	e  Event
+	wg *sync.WaitGroup
 }
 
 // Dropped is the event published internally by the bus to signal that
@@ -186,8 +186,8 @@ func (h *Handler) close(f func()) {
 
 func (h *Handler) processEvent(e event) {
 	h.fn(e.e, e.t)
-	if e.done != nil {
-		e.done <- struct{}{}
+	if e.wg != nil {
+		e.wg.Done()
 	}
 }
 
@@ -214,9 +214,9 @@ Loop:
 		switch {
 		case h.opts.drain:
 			h.processEvent(e)
-		case e.done != nil:
+		case e.wg != nil:
 			// Unblock any pending sync publication
-			e.done <- struct{}{}
+			e.wg.Done()
 		}
 	}
 }
@@ -324,19 +324,12 @@ func (b *Bus) Close() {
 	}
 	b.closed = true
 	go func() {
-		n := len(b.handlers)
-		done := make(chan struct{})
-		defer close(done)
-		f := func() {
-			done <- struct{}{}
-		}
+		var wg sync.WaitGroup
+		wg.Add(len(b.handlers))
 		for h := range b.handlers {
-			h.close(f)
+			h.close(wg.Done)
 		}
-		for n > 0 {
-			<-done
-			n--
-		}
+		wg.Wait()
 		if b.opts.closedHandler != nil {
 			b.opts.closedHandler()
 		}
@@ -426,41 +419,38 @@ func (b *Bus) PublishSync(e Event) error {
 	name := e.Name()
 	b.checkNewEvent(name)
 	handlers := b.events[name]
-	n, ack := len(handlers), 0
+	n := len(handlers)
 	if n == 0 {
 		b.mu.Unlock()
 		return nil
 	}
 	var busyHandlers []*Handler
-	done := make(chan struct{})
-	defer close(done)
+	var wg sync.WaitGroup
+	wg.Add(n)
 	for h := range handlers {
 		h.init()
 		if h.opts.callOnce {
 			b.unsubscribe(h)
 		}
-		if ok, err := h.publish(event{t, e, done}, false); !ok {
+		if ok, err := h.publish(event{t, e, &wg}, false); !ok {
 			if err == nil {
 				busyHandlers = append(busyHandlers, h)
 			} else {
-				n--
+				wg.Done()
 			}
 		}
 	}
 	b.mu.Unlock()
 	for _, h := range busyHandlers {
 		go func(h *Handler) {
-			if ok, _ := h.publish(event{t, e, done}, true); !ok {
+			if ok, _ := h.publish(event{t, e, &wg}, true); !ok {
 				// The event has not been published because the
 				// handler has been unsubscribed in the meantime
-				done <- struct{}{}
+				wg.Done()
 			}
 		}(h)
 	}
-	for ack < n {
-		<-done
-		ack++
-	}
+	wg.Wait()
 	return nil
 }
 
