@@ -403,12 +403,13 @@ func (b *Bus) HasSubscribers(name EventName) (bool, error) {
 // the event is dropped for this handler and a Dropped event is
 // generated.
 func (b *Bus) PublishAsync(e Event) error {
+	t := time.Now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
 		return ErrBusClosed
 	}
-	b.publishAsync(e)
+	b.publishAsync(event{t: t, e: e})
 	return nil
 }
 
@@ -502,18 +503,20 @@ func (b *Bus) checkNewEvent(name EventName) {
 }
 
 // publishAsync must be called with the lock held.
-func (b *Bus) publishAsync(e Event) {
-	name := e.Name()
+func (b *Bus) publishAsync(e event) {
+	name := e.e.Name()
 	b.checkNewEvent(name)
-	t := time.Now()
 	for h := range b.events[name] {
 		h.init()
 		if h.opts.callOnce {
 			b.unsubscribe(h)
 		}
-		if ok, err := h.publish(event{t: t, e: e}, false); !ok && err == nil {
-			if _, ok := e.(Dropped); !ok {
-				b.publishAsync(Dropped{h, t, e})
+		if ok, err := h.publish(e, false); !ok && err == nil {
+			if _, ok := e.e.(Dropped); !ok {
+				b.publishAsync(event{
+					t: time.Now(),
+					e: Dropped{h, e.t, e.e},
+				})
 			}
 		}
 	}
