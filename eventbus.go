@@ -154,12 +154,20 @@ func (h *Handler) close(f func()) {
 		return
 	}
 	h.closed = true
+	var f2 func()
 	if f == nil {
-		f = h.opts.unsubscribeHandler
+		f2 = h.opts.unsubscribeHandler
+	} else {
+		f2 = func() {
+			if h.opts.unsubscribeHandler != nil {
+				h.opts.unsubscribeHandler()
+			}
+			f()
+		}
 	}
 	if h.ch == nil {
 		if f != nil {
-			go f()
+			go f2()
 		}
 		return
 	}
@@ -170,8 +178,8 @@ func (h *Handler) close(f func()) {
 		// sync publications so we can safely close the channel
 		close(h.ch)
 		<-h.done
-		if f != nil {
-			f()
+		if f2 != nil {
+			f2()
 		}
 	}()
 }
