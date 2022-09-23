@@ -243,8 +243,8 @@ func WithUnsubscribeHandler(f func()) SubscribeOption {
 	}
 }
 
-// NoDrain prevents Close and Unsubscribe to drain the handler
-// event queue before returning.
+// NoDrain prevents Close and Unsubscribe to drain the handler event
+// queue.
 func NoDrain() SubscribeOption {
 	return func(h *Handler) {
 		h.drain = false
