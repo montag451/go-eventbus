@@ -81,20 +81,16 @@ type HandlerFunc func(e Event, t time.Time)
 
 // Handler represents a subscription to some events.
 type Handler struct {
-	mu                 sync.Mutex
-	closed             bool
-	callOnce           bool
-	fn                 HandlerFunc
-	p                  EventNamePattern
-	re                 *regexp.Regexp
-	name               string
-	queueSize          int
-	drain              bool
-	unsubscribeHandler func()
-	syncPubs           sync.WaitGroup
-	ch                 chan event
-	stop               chan struct{}
-	done               chan struct{}
+	mu       sync.Mutex
+	opts     subscribeOptions
+	closed   bool
+	fn       HandlerFunc
+	p        EventNamePattern
+	re       *regexp.Regexp
+	syncPubs sync.WaitGroup
+	ch       chan event
+	stop     chan struct{}
+	done     chan struct{}
 }
 
 // Pattern returns the handler pattern.
@@ -104,12 +100,12 @@ func (h *Handler) Pattern() EventNamePattern {
 
 // Name returns the handler name.
 func (h *Handler) Name() string {
-	return h.name
+	return h.opts.name
 }
 
 // QueueSize returns the handler queue size.
 func (h *Handler) QueueSize() int {
-	return h.queueSize
+	return h.opts.queueSize
 }
 
 func (h *Handler) init() {
@@ -118,7 +114,7 @@ func (h *Handler) init() {
 	if h.ch != nil || h.closed {
 		return
 	}
-	h.ch = make(chan event, h.queueSize)
+	h.ch = make(chan event, h.opts.queueSize)
 	h.stop = make(chan struct{})
 	h.done = make(chan struct{})
 	go h.processEvents()
@@ -159,7 +155,7 @@ func (h *Handler) close(f func()) {
 	}
 	h.closed = true
 	if f == nil {
-		f = h.unsubscribeHandler
+		f = h.opts.unsubscribeHandler
 	}
 	if h.ch == nil {
 		if f != nil {
@@ -208,7 +204,7 @@ Loop:
 	}
 	for e := range h.ch {
 		switch {
-		case h.drain:
+		case h.opts.drain:
 			h.processEvent(e)
 		case e.done != nil:
 			// Unblock any pending sync publication
@@ -218,43 +214,51 @@ Loop:
 }
 
 // SubscribeOption configures a Handler as returned by Subscribe.
-type SubscribeOption func(*Handler)
+type SubscribeOption func(*subscribeOptions)
+
+type subscribeOptions struct {
+	name               string
+	queueSize          int
+	unsubscribeHandler func()
+	drain              bool
+	callOnce           bool
+}
 
 // WithName sets the name of the handler.
 func WithName(name string) SubscribeOption {
-	return func(h *Handler) {
-		h.name = name
+	return func(opts *subscribeOptions) {
+		opts.name = name
 	}
 }
 
 // WithQueueSize sets the queue size of the handler.
 func WithQueueSize(size int) SubscribeOption {
-	return func(h *Handler) {
+	return func(opts *subscribeOptions) {
 		if size <= 0 {
 			size = 1
 		}
-		h.queueSize = size
+		opts.queueSize = size
 	}
 }
 
 func WithUnsubscribeHandler(f func()) SubscribeOption {
-	return func(h *Handler) {
-		h.unsubscribeHandler = f
+	return func(opts *subscribeOptions) {
+		opts.unsubscribeHandler = f
 	}
 }
 
 // NoDrain prevents Close and Unsubscribe to drain the handler event
 // queue.
 func NoDrain() SubscribeOption {
-	return func(h *Handler) {
-		h.drain = false
+	return func(opts *subscribeOptions) {
+		opts.drain = false
 	}
 }
 
 // CallOnce ensures that the handler will be called only once
 func CallOnce() SubscribeOption {
-	return func(h *Handler) {
-		h.callOnce = true
+	return func(opts *subscribeOptions) {
+		opts.callOnce = true
 	}
 }
 
@@ -268,19 +272,23 @@ var (
 // Bus represents an event bus. A Bus is safe for use by multiple
 // goroutines simultaneously.
 type Bus struct {
-	mu            sync.Mutex
-	closed        bool
-	closedHandler func()
-	handlers      map[*Handler]struct{}
-	events        map[EventName]map[*Handler]struct{}
+	mu       sync.Mutex
+	opts     busOptions
+	closed   bool
+	handlers map[*Handler]struct{}
+	events   map[EventName]map[*Handler]struct{}
 }
 
 // BusOption configures a Bus as returned by New.
-type BusOption func(*Bus)
+type BusOption func(*busOptions)
+
+type busOptions struct {
+	closedHandler func()
+}
 
 func WithClosedHandler(f func()) BusOption {
-	return func(b *Bus) {
-		b.closedHandler = f
+	return func(opts *busOptions) {
+		opts.closedHandler = f
 	}
 }
 
@@ -291,7 +299,7 @@ func New(options ...BusOption) *Bus {
 		events:   make(map[EventName]map[*Handler]struct{}),
 	}
 	for _, opt := range options {
-		opt(b)
+		opt(&b.opts)
 	}
 	return b
 }
@@ -321,8 +329,8 @@ func (b *Bus) Close() {
 			<-done
 			n--
 		}
-		if b.closedHandler != nil {
-			b.closedHandler()
+		if b.opts.closedHandler != nil {
+			b.opts.closedHandler()
 		}
 	}()
 }
@@ -336,14 +344,16 @@ func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...Subscribe
 		return nil, ErrBusClosed
 	}
 	h := &Handler{
-		fn:        fn,
-		p:         p,
-		re:        patternToRegex(p),
-		queueSize: defaultQueueSize,
-		drain:     true,
+		opts: subscribeOptions{
+			queueSize: defaultQueueSize,
+			drain:     true,
+		},
+		fn: fn,
+		p:  p,
+		re: patternToRegex(p),
 	}
 	for _, opt := range options {
-		opt(h)
+		opt(&h.opts)
 	}
 	b.handlers[h] = struct{}{}
 	b.subscribeAll(h)
@@ -417,7 +427,7 @@ func (b *Bus) PublishSync(e Event) error {
 	defer close(done)
 	for h := range handlers {
 		h.init()
-		if h.callOnce {
+		if h.opts.callOnce {
 			b.unsubscribe(h)
 		}
 		if ok, err := h.publish(event{t, e, done}, false); !ok {
@@ -490,7 +500,7 @@ func (b *Bus) publishAsync(e Event) {
 	t := time.Now()
 	for h := range b.events[name] {
 		h.init()
-		if h.callOnce {
+		if h.opts.callOnce {
 			b.unsubscribe(h)
 		}
 		if ok, err := h.publish(event{t: t, e: e}, false); !ok && err == nil {
