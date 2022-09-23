@@ -1,6 +1,7 @@
 package eventbus
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -26,9 +27,9 @@ func newTestBus(t testing.TB) *Bus {
 	return b
 }
 
-func subscribe(t testing.TB, b *Bus, p EventNamePattern, f func(Event, time.Time), opts ...Option) *Handler {
+func subscribe(t testing.TB, b *Bus, p EventNamePattern, f HandlerFunc, opts ...SubscribeOption) *Handler {
 	t.Helper()
-	h := b.Subscribe(p, f, opts...)
+	h, _ := b.Subscribe(p, f, opts...)
 	t.Cleanup(func() {
 		b.Unsubscribe(h)
 	})
@@ -37,14 +38,14 @@ func subscribe(t testing.TB, b *Bus, p EventNamePattern, f func(Event, time.Time
 
 func assertHasSubscribers(t testing.TB, b *Bus, name EventName) {
 	t.Helper()
-	if !b.HasSubscribers(name) {
+	if ok, _ := b.HasSubscribers(name); !ok {
 		t.Errorf("bus has no subscribers for %q, expected at least one", name)
 	}
 }
 
 func assertHasNoSubscribers(t testing.TB, b *Bus, name EventName) {
 	t.Helper()
-	if b.HasSubscribers(name) {
+	if ok, _ := b.HasSubscribers(name); ok {
 		t.Errorf("bus has subscribers for %q, expected none", name)
 	}
 }
@@ -72,15 +73,15 @@ func assertHandlerQueueSize(t testing.TB, h *Handler, expected int) {
 
 func assertHandlerDrain(t testing.TB, h *Handler, expected bool) {
 	t.Helper()
-	if h.drain != expected {
-		t.Errorf("bad handler drain option: got %t, expected %t", h.drain, expected)
+	if h.opts.drain != expected {
+		t.Errorf("bad handler drain option: got %t, expected %t", h.opts.drain, expected)
 	}
 }
 
 func assertHandlerCallOnce(t testing.TB, h *Handler, expected bool) {
 	t.Helper()
-	if h.callOnce != expected {
-		t.Errorf("bad handler call once option: got %t, expected %t", h.callOnce, expected)
+	if h.opts.callOnce != expected {
+		t.Errorf("bad handler call once option: got %t, expected %t", h.opts.callOnce, expected)
 	}
 }
 
@@ -128,12 +129,12 @@ func TestSubscribe(t *testing.T) {
 		assertHandlerQueueSize(t, h, size)
 	})
 	t.Run("NoDrainOption", func(t *testing.T) {
-		h := subscribe(t, b, pattern, noop, WithNoDrain())
+		h := subscribe(t, b, pattern, noop, NoDrain())
 		assertHasSubscribers(t, b, name)
 		assertHandlerDrain(t, h, false)
 	})
 	t.Run("CallOnceOption", func(t *testing.T) {
-		h := subscribe(t, b, pattern, noop, WithCallOnce())
+		h := subscribe(t, b, pattern, noop, CallOnce())
 		assertHasSubscribers(t, b, name)
 		assertHandlerCallOnce(t, h, true)
 	})
@@ -172,28 +173,37 @@ func TestPublish(t *testing.T) {
 		assertNumberOfEvents(t, n, 3)
 	})
 	t.Run("Async", func(t *testing.T) {
+		unsubscribed := make(chan struct{})
 		n := 0
 		h := subscribe(t, b, "test.event1", func(e Event, t time.Time) {
 			n++
-		})
+		}, WithUnsubscribedHandler(func() {
+			close(unsubscribed)
+		}))
 		b.PublishAsync(TestEvent1{})
 		b.PublishAsync(TestEvent1{})
 		b.PublishAsync(TestEvent2{})
 		b.Unsubscribe(h)
+		<-unsubscribed
 		assertNumberOfEvents(t, n, 2)
 	})
 	t.Run("AsyncWildcard", func(t *testing.T) {
+		unsubscribed := make(chan struct{})
 		n := 0
 		h := subscribe(t, b, "test.*", func(e Event, t time.Time) {
 			n++
-		})
+		}, WithUnsubscribedHandler(func() {
+			close(unsubscribed)
+		}))
 		b.PublishAsync(TestEvent1{})
 		b.PublishAsync(TestEvent1{})
 		b.PublishAsync(TestEvent2{})
 		b.Unsubscribe(h)
+		<-unsubscribed
 		assertNumberOfEvents(t, n, 3)
 	})
 	t.Run("Drop", func(t *testing.T) {
+		var wg sync.WaitGroup
 		n := 0
 		done := make(chan struct{})
 		wait := make(chan struct{})
@@ -201,12 +211,14 @@ func TestPublish(t *testing.T) {
 			n++
 			done <- struct{}{}
 			<-wait
-		}, WithQueueSize(1))
+		}, WithQueueSize(1), WithUnsubscribedHandler(wg.Done))
+		wg.Add(1)
 		var dropped Event
 		event2 := TestEvent2{}
 		h2 := subscribe(t, b, "_bus.dropped", func(e Event, t time.Time) {
 			dropped = e.(Dropped).Event
-		})
+		}, WithUnsubscribedHandler(wg.Done))
+		wg.Add(1)
 		b.PublishAsync(TestEvent1{})
 		<-done
 		b.PublishAsync(TestEvent1{})
@@ -215,6 +227,7 @@ func TestPublish(t *testing.T) {
 		<-done
 		b.Unsubscribe(h1)
 		b.Unsubscribe(h2)
+		wg.Wait()
 		assertNumberOfEvents(t, n, 2)
 		if dropped != event2 {
 			t.Errorf("unexpected dropped event: got %#v, expected: %#v", dropped, event2)
@@ -226,7 +239,7 @@ func TestPublish(t *testing.T) {
 		h := subscribe(t, b, "test.*", func(e Event, t time.Time) {
 			<-wait
 			n++
-		}, WithNoDrain())
+		}, NoDrain())
 		b.PublishAsync(TestEvent1{})
 		b.Unsubscribe(h)
 		assertNumberOfEvents(t, n, 0)
@@ -236,7 +249,7 @@ func TestPublish(t *testing.T) {
 		n := 0
 		h := subscribe(t, b, "test.*", func(e Event, t time.Time) {
 			n++
-		}, WithCallOnce())
+		}, CallOnce())
 		b.PublishSync(TestEvent1{})
 		b.PublishSync(TestEvent1{})
 		b.Unsubscribe(h)
