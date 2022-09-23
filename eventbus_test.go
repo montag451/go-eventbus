@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -85,7 +86,7 @@ func assertHandlerCallOnce(t testing.TB, h *Handler, expected bool) {
 	}
 }
 
-func assertNumberOfEvents(t testing.TB, got int, expected int) {
+func assertNumberOfEvents(t testing.TB, got uint64, expected uint64) {
 	t.Helper()
 	if got != expected {
 		t.Errorf("bad number of events: got %d, expected %d", got, expected)
@@ -153,30 +154,30 @@ func TestUnsubscribe(t *testing.T) {
 func TestPublish(t *testing.T) {
 	b := newTestBus(t)
 	t.Run("Sync", func(t *testing.T) {
-		n := 0
+		var n uint64
 		subscribe(t, b, "test.event1", func(e Event, t time.Time) {
-			n++
+			atomic.AddUint64(&n, 1)
 		})
 		b.PublishSync(TestEvent1{})
 		b.PublishSync(TestEvent1{})
 		b.PublishSync(TestEvent2{})
-		assertNumberOfEvents(t, n, 2)
+		assertNumberOfEvents(t, atomic.LoadUint64(&n), 2)
 	})
 	t.Run("SyncWildcard", func(t *testing.T) {
-		n := 0
+		var n uint64
 		subscribe(t, b, "test.*", func(e Event, t time.Time) {
-			n++
+			atomic.AddUint64(&n, 1)
 		})
 		b.PublishSync(TestEvent1{})
 		b.PublishSync(TestEvent1{})
 		b.PublishSync(TestEvent2{})
-		assertNumberOfEvents(t, n, 3)
+		assertNumberOfEvents(t, atomic.LoadUint64(&n), 3)
 	})
 	t.Run("Async", func(t *testing.T) {
 		unsubscribed := make(chan struct{})
-		n := 0
+		var n uint64
 		h := subscribe(t, b, "test.event1", func(e Event, t time.Time) {
-			n++
+			atomic.AddUint64(&n, 1)
 		}, WithUnsubscribedHandler(func() {
 			close(unsubscribed)
 		}))
@@ -185,13 +186,13 @@ func TestPublish(t *testing.T) {
 		b.PublishAsync(TestEvent2{})
 		b.Unsubscribe(h)
 		<-unsubscribed
-		assertNumberOfEvents(t, n, 2)
+		assertNumberOfEvents(t, atomic.LoadUint64(&n), 2)
 	})
 	t.Run("AsyncWildcard", func(t *testing.T) {
 		unsubscribed := make(chan struct{})
-		n := 0
+		var n uint64
 		h := subscribe(t, b, "test.*", func(e Event, t time.Time) {
-			n++
+			atomic.AddUint64(&n, 1)
 		}, WithUnsubscribedHandler(func() {
 			close(unsubscribed)
 		}))
@@ -200,15 +201,15 @@ func TestPublish(t *testing.T) {
 		b.PublishAsync(TestEvent2{})
 		b.Unsubscribe(h)
 		<-unsubscribed
-		assertNumberOfEvents(t, n, 3)
+		assertNumberOfEvents(t, atomic.LoadUint64(&n), 3)
 	})
 	t.Run("Drop", func(t *testing.T) {
 		var wg sync.WaitGroup
-		n := 0
+		var n uint64
 		done := make(chan struct{})
 		wait := make(chan struct{})
 		h1 := subscribe(t, b, "test.*", func(e Event, t time.Time) {
-			n++
+			atomic.AddUint64(&n, 1)
 			done <- struct{}{}
 			<-wait
 		}, WithQueueSize(1), WithUnsubscribedHandler(wg.Done))
@@ -228,32 +229,32 @@ func TestPublish(t *testing.T) {
 		b.Unsubscribe(h1)
 		b.Unsubscribe(h2)
 		wg.Wait()
-		assertNumberOfEvents(t, n, 2)
+		assertNumberOfEvents(t, atomic.LoadUint64(&n), 2)
 		if dropped != event2 {
 			t.Errorf("unexpected dropped event: got %#v, expected: %#v", dropped, event2)
 		}
 	})
 	t.Run("NoDrain", func(t *testing.T) {
-		n := 0
+		var n uint64
 		wait := make(chan struct{})
 		h := subscribe(t, b, "test.*", func(e Event, t time.Time) {
 			<-wait
-			n++
+			atomic.AddUint64(&n, 1)
 		}, NoDrain())
 		b.PublishAsync(TestEvent1{})
 		b.Unsubscribe(h)
-		assertNumberOfEvents(t, n, 0)
+		assertNumberOfEvents(t, atomic.LoadUint64(&n), 0)
 		close(wait)
 	})
 	t.Run("CallOnce", func(t *testing.T) {
-		n := 0
+		var n uint64
 		h := subscribe(t, b, "test.*", func(e Event, t time.Time) {
-			n++
+			atomic.AddUint64(&n, 1)
 		}, CallOnce())
 		b.PublishSync(TestEvent1{})
 		b.PublishSync(TestEvent1{})
 		b.Unsubscribe(h)
-		assertNumberOfEvents(t, n, 1)
+		assertNumberOfEvents(t, atomic.LoadUint64(&n), 1)
 	})
 }
 
