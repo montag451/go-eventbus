@@ -365,7 +365,7 @@ func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...Subscribe
 // the handler pattern and starts draining, in the background, the
 // handler event queue if the given handler has not been registered
 // with the NoDrain option. When the handler has been drained, the
-// callback set with WithUnsubscribeHandler is called.
+// callback set with WithUnsubscribedHandler is called.
 func (b *Bus) Unsubscribe(h *Handler) error {
 	b.mu.Lock()
 	if b.closed {
