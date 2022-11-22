@@ -166,7 +166,7 @@ func (h *Handler) close(f func()) {
 		}
 	}
 	if h.ch == nil {
-		if f != nil {
+		if f2 != nil {
 			go f2()
 		}
 		return
