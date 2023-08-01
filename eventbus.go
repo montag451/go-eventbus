@@ -89,16 +89,16 @@ type HandlerFunc func(e Event, t time.Time)
 
 // Handler represents a subscription to some events.
 type Handler struct {
-	mu       sync.Mutex
-	opts     subscribeOptions
-	closed   bool
-	fn       HandlerFunc
-	p        EventNamePattern
-	re       *regexp.Regexp
-	syncPubs sync.WaitGroup
-	ch       chan event
-	stop     chan struct{}
-	done     chan struct{}
+	mu      sync.Mutex
+	opts    subscribeOptions
+	closed  bool
+	fn      HandlerFunc
+	p       EventNamePattern
+	re      *regexp.Regexp
+	waiters sync.WaitGroup
+	ch      chan event
+	stop    chan struct{}
+	done    chan struct{}
 }
 
 // Pattern returns the handler pattern.
@@ -128,16 +128,16 @@ func (h *Handler) init() {
 	go h.processEvents()
 }
 
-func (h *Handler) publish(e event, sync bool) (published bool, err error) {
+func (h *Handler) publish(e event, wait bool) (published bool, err error) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
 		err = errHandlerClosed
 		return
 	}
-	if sync {
-		h.syncPubs.Add(1)
-		defer h.syncPubs.Done()
+	if wait {
+		h.waiters.Add(1)
+		defer h.waiters.Done()
 		h.mu.Unlock()
 		select {
 		case h.ch <- e:
@@ -181,7 +181,7 @@ func (h *Handler) close(f func()) {
 	}
 	close(h.stop)
 	go func() {
-		h.syncPubs.Wait()
+		h.waiters.Wait()
 		// At this point the handler is closed and there is no pending
 		// sync publications so we can safely close the channel
 		close(h.ch)
@@ -403,6 +403,20 @@ func (b *Bus) HasSubscribers(name EventName) (bool, error) {
 	return len(b.events[name]) > 0, nil
 }
 
+// Publish publishes an event on the bus and returns when the event
+// has been put in the event queue of all the handlers subscribed to
+// the event.
+func (b *Bus) Publish(e Event) error {
+	return b.publish(e, false)
+}
+
+// PublishSync publishes an event synchronously. It returns when the
+// event has been processed by all the handlers subscribed to the
+// event.
+func (b *Bus) PublishSync(e Event) error {
+	return b.publish(e, true)
+}
+
 // PublishAsync publishes an event asynchronously. It returns as soon
 // as the event has been put in the event queue of all the handlers
 // subscribed to the event. If the event queue of a handler is full,
@@ -416,54 +430,6 @@ func (b *Bus) PublishAsync(e Event) error {
 		return ErrBusClosed
 	}
 	b.publishAsync(event{t: t, e: e})
-	return nil
-}
-
-// PublishSync publishes an event synchronously. It returns when the
-// event has been processed by all the handlers subscribed to the
-// event.
-func (b *Bus) PublishSync(e Event) error {
-	t := time.Now()
-	b.mu.Lock()
-	if b.closed {
-		b.mu.Unlock()
-		return ErrBusClosed
-	}
-	name := e.Name()
-	b.checkNewEvent(name)
-	handlers := b.events[name]
-	n := len(handlers)
-	if n == 0 {
-		b.mu.Unlock()
-		return nil
-	}
-	var busyHandlers []*Handler
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for h := range handlers {
-		h.init()
-		if h.opts.callOnce {
-			b.unsubscribe(h)
-		}
-		if ok, err := h.publish(event{t, e, &wg}, false); !ok {
-			if err == nil {
-				busyHandlers = append(busyHandlers, h)
-			} else {
-				wg.Done()
-			}
-		}
-	}
-	b.mu.Unlock()
-	for _, h := range busyHandlers {
-		go func(h *Handler) {
-			if ok, _ := h.publish(event{t, e, &wg}, true); !ok {
-				// The event has not been published because the
-				// handler has been unsubscribed in the meantime
-				wg.Done()
-			}
-		}(h)
-	}
-	wg.Wait()
 	return nil
 }
 
@@ -503,6 +469,55 @@ func (b *Bus) checkNewEvent(name EventName) {
 			b.subscribe(name, h)
 		}
 	}
+}
+
+func (b *Bus) publish(e Event, synch bool) error {
+	ev := event{t: time.Now(), e: e}
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return ErrBusClosed
+	}
+	name := e.Name()
+	b.checkNewEvent(name)
+	handlers := b.events[name]
+	n := len(handlers)
+	if n == 0 {
+		b.mu.Unlock()
+		return nil
+	}
+	var busyHandlers []*Handler
+	var wg sync.WaitGroup
+	wg.Add(n)
+	if synch {
+		ev.wg = &wg
+	}
+	for h := range handlers {
+		h.init()
+		if h.opts.callOnce {
+			b.unsubscribe(h)
+		}
+		ok, err := h.publish(ev, false)
+		switch {
+		case ok && !synch, err != nil:
+			wg.Done()
+		case !ok:
+			busyHandlers = append(busyHandlers, h)
+		}
+	}
+	b.mu.Unlock()
+	for _, h := range busyHandlers {
+		go func(h *Handler) {
+			if ok, _ := h.publish(ev, true); !ok || !synch {
+				// The event has not been published because the
+				// handler has been unsubscribed in the meantime or
+				// it's not a synchronous publish
+				wg.Done()
+			}
+		}(h)
+	}
+	wg.Wait()
+	return nil
 }
 
 // publishAsync must be called with the lock held.
