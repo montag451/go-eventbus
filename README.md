@@ -3,7 +3,7 @@
 The `eventbus` package provides a simple event bus for Go. It
 features:
 - async/sync publish
-- wildcard subscription
+- flexible pattern based subscription (exact match, wildcard, regex, ...)
 
 # Usage #
 

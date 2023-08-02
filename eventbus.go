@@ -20,15 +20,53 @@ import (
 	"time"
 )
 
-type (
-	// EventName represents the name of an event.
-	EventName string
-	// EventNamePattern represents a pattern to match against event
-	// names. Only '*' has a special meaning in a pattern, it matches
-	// any string, including the empty string. To prevent '*' to be
-	// interpreted as a wildcard, it must be escaped.
-	EventNamePattern string
-)
+// EventNamePattern is the interface implemented by all event patterns
+type EventNamePattern interface {
+	ToRegex() *regexp.Regexp
+}
+
+// EventName represents the name of an event.
+type EventName string
+
+func (n EventName) ToRegex() *regexp.Regexp {
+	return regexp.MustCompile("^" + regexp.QuoteMeta(string(n)) + "$")
+}
+
+// WildcardPattern represents a pattern to match against event
+// names. Only '*' has a special meaning in a pattern, it matches any
+// string, including the empty string. To prevent '*' to be
+// interpreted as a wildcard, it must be escaped.
+type WildcardPattern string
+
+func (p WildcardPattern) ToRegex() *regexp.Regexp {
+	pattern := "^"
+	sp := string(p)
+	for len(sp) > 0 {
+		idx := strings.Index(sp, "*")
+		if idx == -1 {
+			pattern += regexp.QuoteMeta(sp)
+			break
+		}
+		if part := sp[:idx]; idx == 0 || !strings.HasSuffix(part, "\\") {
+			pattern += regexp.QuoteMeta(part) + ".*"
+		} else {
+			pattern += regexp.QuoteMeta(part[:len(part)-1] + "*")
+		}
+		sp = sp[idx+1:]
+	}
+	return regexp.MustCompile(pattern + "$")
+}
+
+// RegexPattern represents a pattern to match against event names. It
+// wraps a [regexp.Regexp] and matches all events that match the
+// wrapped regex.
+type RegexPattern struct {
+	Regex *regexp.Regexp
+}
+
+func (p RegexPattern) ToRegex() *regexp.Regexp {
+	return p.Regex
+}
 
 // Event is the interface implemented by all events that are published
 // on the bus.
@@ -57,25 +95,6 @@ type Dropped struct {
 // Dropped event.
 func (Dropped) Name() EventName {
 	return "_bus.dropped"
-}
-
-func patternToRegex(p EventNamePattern) *regexp.Regexp {
-	pattern := "^"
-	sp := string(p)
-	for len(sp) > 0 {
-		idx := strings.Index(sp, "*")
-		if idx == -1 {
-			pattern += regexp.QuoteMeta(sp)
-			break
-		}
-		if part := sp[:idx]; idx == 0 || !strings.HasSuffix(part, "\\") {
-			pattern += regexp.QuoteMeta(part) + ".*"
-		} else {
-			pattern += regexp.QuoteMeta(part[:len(part)-1] + "*")
-		}
-		sp = sp[idx+1:]
-	}
-	return regexp.MustCompile(pattern + "$")
 }
 
 const defaultQueueSize = 100
@@ -349,9 +368,17 @@ func (b *Bus) Close() {
 	}()
 }
 
-// Subscribe subscribes to all events matching the given pattern. It
-// returns a [Handler] instance representing the subscription.
-func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...SubscribeOption) (*Handler, error) {
+// Subscribe subscribes to all events matching the given event
+// name. It returns a [Handler] instance representing the
+// subscription.
+func (b *Bus) Subscribe(n EventName, fn HandlerFunc, options ...SubscribeOption) (*Handler, error) {
+	return b.SubscribePattern(n, fn, options...)
+}
+
+// SubscribePattern subscribes to all events matching the given event
+// name pattern. It returns a [Handler] instance representing the
+// subscription.
+func (b *Bus) SubscribePattern(p EventNamePattern, fn HandlerFunc, options ...SubscribeOption) (*Handler, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
@@ -364,7 +391,7 @@ func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...Subscribe
 		},
 		fn: fn,
 		p:  p,
-		re: patternToRegex(p),
+		re: p.ToRegex(),
 	}
 	for _, opt := range options {
 		opt(&h.opts)
