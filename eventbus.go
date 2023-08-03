@@ -22,50 +22,56 @@ import (
 
 // EventNamePattern is the interface implemented by all event patterns
 type EventNamePattern interface {
-	ToRegex() *regexp.Regexp
+	Match(n EventName) bool
 }
 
 // EventName represents the name of an event.
 type EventName string
 
-func (n EventName) ToRegex() *regexp.Regexp {
-	return regexp.MustCompile("^" + regexp.QuoteMeta(string(n)) + "$")
+func (p EventName) Match(n EventName) bool {
+	return p == n
 }
 
-// WildcardPattern represents a pattern to match against event
+type regexPattern struct {
+	re *regexp.Regexp
+}
+
+func (p regexPattern) Match(n EventName) bool {
+	return p.re.MatchString(string(n))
+}
+
+// RegexPattern returns a pattern to match against event names. It
+// matches all events that match the given regex.
+func RegexPattern(re *regexp.Regexp) EventNamePattern {
+	return regexPattern{re}
+}
+
+// WildcardPattern returns a pattern to match against event
 // names. Only '*' has a special meaning in a pattern, it matches any
 // string, including the empty string. To prevent '*' to be
 // interpreted as a wildcard, it must be escaped.
-type WildcardPattern string
-
-func (p WildcardPattern) ToRegex() *regexp.Regexp {
-	pattern := "^"
-	sp := string(p)
+func WildcardPattern(pattern string) EventNamePattern {
+	regex := "^"
+	sp := pattern
+	wildcards := 0
 	for len(sp) > 0 {
 		idx := strings.Index(sp, "*")
 		if idx == -1 {
-			pattern += regexp.QuoteMeta(sp)
+			regex += regexp.QuoteMeta(sp)
 			break
 		}
 		if part := sp[:idx]; idx == 0 || !strings.HasSuffix(part, "\\") {
-			pattern += regexp.QuoteMeta(part) + ".*"
+			regex += regexp.QuoteMeta(part) + ".*"
+			wildcards++
 		} else {
-			pattern += regexp.QuoteMeta(part[:len(part)-1] + "*")
+			regex += regexp.QuoteMeta(part[:len(part)-1] + "*")
 		}
 		sp = sp[idx+1:]
 	}
-	return regexp.MustCompile(pattern + "$")
-}
-
-// RegexPattern represents a pattern to match against event names. It
-// wraps a [regexp.Regexp] and matches all events that match the
-// wrapped regex.
-type RegexPattern struct {
-	Regex *regexp.Regexp
-}
-
-func (p RegexPattern) ToRegex() *regexp.Regexp {
-	return p.Regex
+	if wildcards > 0 {
+		return regexPattern{regexp.MustCompile(regex + "$")}
+	}
+	return EventName(pattern)
 }
 
 // Event is the interface implemented by all events that are published
@@ -113,7 +119,6 @@ type Handler struct {
 	closed  bool
 	fn      HandlerFunc
 	p       EventNamePattern
-	re      *regexp.Regexp
 	waiters sync.WaitGroup
 	ch      chan event
 	stop    chan struct{}
@@ -391,7 +396,6 @@ func (b *Bus) SubscribePattern(p EventNamePattern, fn HandlerFunc, options ...Su
 		},
 		fn: fn,
 		p:  p,
-		re: p.ToRegex(),
 	}
 	for _, opt := range options {
 		opt(&h.opts)
@@ -460,11 +464,16 @@ func (b *Bus) PublishAsync(e Event) error {
 	return nil
 }
 
-// subscribe must be called with the lock held.
-func (b *Bus) subscribe(n EventName, h *Handler) {
-	if !h.re.MatchString(string(n)) {
+// maybeSubscribe must be called with the lock held.
+func (b *Bus) maybeSubscribe(n EventName, h *Handler) {
+	if !h.p.Match(n) {
 		return
 	}
+	b.subscribe(n, h)
+}
+
+// subscribe must be called with the lock held.
+func (b *Bus) subscribe(n EventName, h *Handler) {
 	m := b.events[n]
 	if m == nil {
 		m = make(map[*Handler]struct{})
@@ -475,8 +484,12 @@ func (b *Bus) subscribe(n EventName, h *Handler) {
 
 // subscribeAll must be called with the lock held.
 func (b *Bus) subscribeAll(h *Handler) {
-	for n := range b.events {
+	if n, ok := h.p.(EventName); ok {
 		b.subscribe(n, h)
+	} else {
+		for n := range b.events {
+			b.maybeSubscribe(n, h)
+		}
 	}
 }
 
@@ -493,7 +506,7 @@ func (b *Bus) checkNewEvent(name EventName) {
 	if _, ok := b.events[name]; !ok {
 		b.events[name] = nil
 		for h := range b.handlers {
-			b.subscribe(name, h)
+			b.maybeSubscribe(name, h)
 		}
 	}
 }
