@@ -123,7 +123,7 @@ func TestSubscribeWildcardPatternWithQuote(t *testing.T) {
 
 func TestSubscribeRegexPattern(t *testing.T) {
 	b := newTestBus(t)
-	pattern := RegexPattern{regexp.MustCompile(`test\.event\d+$`)}
+	pattern := RegexPattern(regexp.MustCompile(`test\.event\d+$`))
 	h := subscribePattern(t, b, pattern, noop)
 	assertHasSubscribers(t, b, `test.event1`)
 	assertHasSubscribers(t, b, `_test.event42`)
