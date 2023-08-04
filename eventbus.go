@@ -315,11 +315,12 @@ var errHandlerClosed = errors.New("handler is closed")
 // Bus represents an event bus. A Bus is safe for use by multiple
 // goroutines simultaneously.
 type Bus struct {
-	mu       sync.Mutex
-	opts     busOptions
-	closed   bool
-	handlers map[*Handler]struct{}
-	events   map[EventName]map[*Handler]struct{}
+	mu              sync.Mutex
+	opts            busOptions
+	closed          bool
+	handlers        map[*Handler]struct{}
+	patternHandlers map[*Handler]struct{}
+	events          map[EventName]map[*Handler]struct{}
 }
 
 // BusOption configures a [Bus] as returned by [New].
@@ -340,8 +341,9 @@ func WithClosedHandler(f func()) BusOption {
 // New creates a new event bus, ready to be used.
 func New(options ...BusOption) *Bus {
 	b := &Bus{
-		handlers: make(map[*Handler]struct{}),
-		events:   make(map[EventName]map[*Handler]struct{}),
+		handlers:        make(map[*Handler]struct{}),
+		patternHandlers: make(map[*Handler]struct{}),
+		events:          make(map[EventName]map[*Handler]struct{}),
 	}
 	for _, opt := range options {
 		opt(&b.opts)
@@ -401,6 +403,9 @@ func (b *Bus) SubscribePattern(p EventNamePattern, fn HandlerFunc, options ...Su
 		opt(&h.opts)
 	}
 	b.handlers[h] = struct{}{}
+	if _, ok := h.p.(EventName); !ok {
+		b.patternHandlers[h] = struct{}{}
+	}
 	b.subscribeAll(h)
 	return h, nil
 }
@@ -496,6 +501,7 @@ func (b *Bus) subscribeAll(h *Handler) {
 // unsubscribe must be called with the lock held.
 func (b *Bus) unsubscribe(h *Handler) {
 	delete(b.handlers, h)
+	delete(b.patternHandlers, h)
 	for _, handlers := range b.events {
 		delete(handlers, h)
 	}
@@ -505,7 +511,7 @@ func (b *Bus) unsubscribe(h *Handler) {
 func (b *Bus) checkNewEvent(name EventName) {
 	if _, ok := b.events[name]; !ok {
 		b.events[name] = nil
-		for h := range b.handlers {
+		for h := range b.patternHandlers {
 			b.maybeSubscribe(name, h)
 		}
 	}
