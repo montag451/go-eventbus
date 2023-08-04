@@ -46,30 +46,55 @@ func RegexPattern(re *regexp.Regexp) EventNamePattern {
 	return regexPattern{re}
 }
 
+type wildcardPattern string
+
+func (p wildcardPattern) Match(n EventName) bool {
+	if p == "*" {
+		return true
+	}
+	return p.match(n)
+}
+
+func (p wildcardPattern) match(n EventName) bool {
+	for len(p) > 0 {
+		switch p[0] {
+		case '*':
+			return p[1:].match(n) || (len(n) > 0 && p.match(n[1:]))
+		case '\\':
+			if len(p) > 1 && p[1] == '*' {
+				p = p[1:]
+			}
+			fallthrough
+		default:
+			if len(n) == 0 || n[0] != p[0] {
+				return false
+			}
+		}
+		n = n[1:]
+		p = p[1:]
+	}
+	return len(n) == 0 && len(p) == 0
+}
+
 // WildcardPattern returns a pattern to match against event
 // names. Only '*' has a special meaning in a pattern, it matches any
 // string, including the empty string. To prevent '*' to be
 // interpreted as a wildcard, it must be escaped.
 func WildcardPattern(pattern string) EventNamePattern {
-	regex := "^"
 	sp := pattern
 	wildcards := 0
 	for len(sp) > 0 {
 		idx := strings.Index(sp, "*")
 		if idx == -1 {
-			regex += regexp.QuoteMeta(sp)
 			break
 		}
 		if part := sp[:idx]; idx == 0 || !strings.HasSuffix(part, "\\") {
-			regex += regexp.QuoteMeta(part) + ".*"
 			wildcards++
-		} else {
-			regex += regexp.QuoteMeta(part[:len(part)-1] + "*")
 		}
 		sp = sp[idx+1:]
 	}
 	if wildcards > 0 {
-		return regexPattern{regexp.MustCompile(regex + "$")}
+		return wildcardPattern(pattern)
 	}
 	return EventName(pattern)
 }
