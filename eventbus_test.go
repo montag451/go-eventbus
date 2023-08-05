@@ -112,15 +112,6 @@ func TestSubscribeWildcardPattern(t *testing.T) {
 	assertHandlerPattern(t, h, pattern)
 }
 
-func TestSubscribeWildcardPatternWithQuote(t *testing.T) {
-	b := newTestBus(t)
-	pattern := WildcardPattern(`test.*\**`)
-	h := subscribePattern(t, b, pattern, noop)
-	assertHasSubscribers(t, b, `test.event*1`)
-	assertHasNoSubscribers(t, b, `test.event2`)
-	assertHandlerPattern(t, h, pattern)
-}
-
 func TestSubscribeRegexPattern(t *testing.T) {
 	b := newTestBus(t)
 	pattern := RegexPattern(regexp.MustCompile(`test\.event\d+$`))

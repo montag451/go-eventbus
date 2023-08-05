@@ -60,11 +60,6 @@ func (p wildcardPattern) match(n EventName) bool {
 		switch p[0] {
 		case '*':
 			return p[1:].match(n) || (len(n) > 0 && p.match(n[1:]))
-		case '\\':
-			if len(p) > 1 && p[1] == '*' {
-				p = p[1:]
-			}
-			fallthrough
 		default:
 			if len(n) == 0 || n[0] != p[0] {
 				return false
@@ -78,8 +73,7 @@ func (p wildcardPattern) match(n EventName) bool {
 
 // WildcardPattern returns a pattern to match against event
 // names. Only '*' has a special meaning in a pattern, it matches any
-// string, including the empty string. To prevent '*' to be
-// interpreted as a wildcard, it must be escaped.
+// string, including the empty string.
 func WildcardPattern(pattern string) EventNamePattern {
 	sp := pattern
 	wildcards := 0
