@@ -343,6 +343,7 @@ type Bus struct {
 	mu              sync.Mutex
 	opts            busOptions
 	closed          bool
+	closeWg         sync.WaitGroup
 	handlers        map[*Handler]struct{}
 	patternHandlers map[*Handler]struct{}
 	events          map[EventName]map[*Handler]struct{}
@@ -388,12 +389,10 @@ func (b *Bus) Close() {
 	}
 	b.closed = true
 	go func() {
-		var wg sync.WaitGroup
-		wg.Add(len(b.handlers))
 		for h := range b.handlers {
-			h.close(wg.Done)
+			b.unsubscribe(h)
 		}
-		wg.Wait()
+		b.closeWg.Wait()
 		if b.opts.closedHandler != nil {
 			b.opts.closedHandler()
 		}
@@ -448,7 +447,6 @@ func (b *Bus) Unsubscribe(h *Handler) error {
 	}
 	b.unsubscribe(h)
 	b.mu.Unlock()
-	h.close(nil)
 	return nil
 }
 
@@ -530,6 +528,8 @@ func (b *Bus) unsubscribe(h *Handler) {
 	for _, handlers := range b.events {
 		delete(handlers, h)
 	}
+	b.closeWg.Add(1)
+	go h.close(b.closeWg.Done)
 }
 
 // checkNewEvent must be called with the lock held.
