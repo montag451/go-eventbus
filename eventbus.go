@@ -493,15 +493,6 @@ func (b *Bus) PublishAsync(e Event) error {
 	return nil
 }
 
-// maybeSubscribe must be called with the lock held.
-func (b *Bus) maybeSubscribe(n EventName, h *Handler) {
-	if !h.p.Match(n) {
-		return
-	}
-	b.subscribe(n, h)
-}
-
-// subscribe must be called with the lock held.
 func (b *Bus) subscribe(n EventName, h *Handler) {
 	m := b.events[n]
 	if m == nil {
@@ -511,7 +502,13 @@ func (b *Bus) subscribe(n EventName, h *Handler) {
 	m[h] = struct{}{}
 }
 
-// subscribeAll must be called with the lock held.
+func (b *Bus) maybeSubscribe(n EventName, h *Handler) {
+	if !h.p.Match(n) {
+		return
+	}
+	b.subscribe(n, h)
+}
+
 func (b *Bus) subscribeAll(h *Handler) {
 	if n, ok := h.p.(EventName); ok {
 		b.subscribe(n, h)
@@ -522,7 +519,6 @@ func (b *Bus) subscribeAll(h *Handler) {
 	}
 }
 
-// unsubscribe must be called with the lock held.
 func (b *Bus) unsubscribe(h *Handler) {
 	delete(b.handlers, h)
 	delete(b.patternHandlers, h)
@@ -533,7 +529,6 @@ func (b *Bus) unsubscribe(h *Handler) {
 	go h.close(b.closeWg.Done)
 }
 
-// checkNewEvent must be called with the lock held.
 func (b *Bus) checkNewEvent(name EventName) {
 	if _, ok := b.events[name]; !ok {
 		b.events[name] = nil
@@ -592,7 +587,6 @@ func (b *Bus) publish(e Event, synch bool) error {
 	return nil
 }
 
-// publishAsync must be called with the lock held.
 func (b *Bus) publishAsync(e event) {
 	name := e.e.Name()
 	b.checkNewEvent(name)
