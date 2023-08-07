@@ -232,8 +232,9 @@ func (h *Handler) close(f func()) {
 	close(h.stop)
 	go func() {
 		h.waiters.Wait()
-		// At this point the handler is closed and there is no pending
-		// sync publications so we can safely close the channel
+		// At this point the handler is closed and there are no more
+		// goroutines waiting to write in the channel so it can be
+		// safely closed
 		close(h.ch)
 		<-h.done
 		if f2 != nil {
