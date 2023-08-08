@@ -271,7 +271,7 @@ Loop:
 	}
 	for e := range h.ch {
 		switch {
-		case h.opts.drain:
+		case h.opts.drain, h.opts.callOnce:
 			h.processEvent(e)
 		case e.wg != nil:
 			// Unblock any pending sync publication
@@ -562,15 +562,22 @@ func (b *Bus) publish(e Event, synch bool) error {
 	}
 	for h := range handlers {
 		h.init()
-		if h.opts.callOnce {
-			b.unsubscribe(h)
-		}
 		ok, err := h.publish(ev, false)
 		switch {
 		case ok && !synch, err != nil:
 			wg.Done()
+		case !ok && h.opts.callOnce:
+			// Should not happen as a handler queue size is at least
+			// one and a CallOnce handler only handles at most one
+			// event
+			panic("unable to queue an event for a CallOnce handler")
 		case !ok:
 			busyHandlers = append(busyHandlers, h)
+		}
+		if h.opts.callOnce {
+			// Here the event is in the queue of the handler so it is
+			// safe to unsubscribe and to close the handler
+			b.unsubscribe(h)
 		}
 	}
 	b.mu.Unlock()
