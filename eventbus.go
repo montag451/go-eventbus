@@ -75,19 +75,7 @@ func (p wildcardPattern) match(n EventName) bool {
 // names. Only '*' has a special meaning in a pattern, it matches any
 // string, including the empty string.
 func WildcardPattern(pattern string) EventNamePattern {
-	sp := pattern
-	wildcards := 0
-	for len(sp) > 0 {
-		idx := strings.Index(sp, "*")
-		if idx == -1 {
-			break
-		}
-		if part := sp[:idx]; idx == 0 || !strings.HasSuffix(part, "\\") {
-			wildcards++
-		}
-		sp = sp[idx+1:]
-	}
-	if wildcards > 0 {
+	if strings.Index(pattern, "*") != -1 {
 		return wildcardPattern(pattern)
 	}
 	return EventName(pattern)
@@ -116,10 +104,12 @@ type Dropped struct {
 	Event     Event
 }
 
+const DroppedEventName = EventName("_bus.dropped")
+
 // Name returns the string "_bus.dropped" which is the name of the
 // Dropped event.
 func (Dropped) Name() EventName {
-	return "_bus.dropped"
+	return DroppedEventName
 }
 
 const defaultQueueSize = 100
