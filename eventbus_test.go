@@ -99,17 +99,48 @@ func TestSubscribeNoPattern(t *testing.T) {
 	b := newTestBus(t)
 	name := EventName("test.event1")
 	h := subscribe(t, b, name, noop)
-	assertHasSubscribers(t, b, name)
 	assertHandlerPattern(t, h, name)
+	assertHasSubscribers(t, b, name)
 }
 
 func TestSubscribeWildcardPattern(t *testing.T) {
 	b := newTestBus(t)
-	pattern := WildcardPattern("test.*")
-	h := subscribePattern(t, b, pattern, noop)
-	assertHasSubscribers(t, b, "test.event1")
-	assertHasSubscribers(t, b, "test.event2")
-	assertHandlerPattern(t, h, pattern)
+	t.Run("Simple", func(t *testing.T) {
+		pattern := WildcardPattern("test.*")
+		assertHasNoSubscribers(t, b, "test.event1")
+		assertHasNoSubscribers(t, b, "test.event2")
+		assertHasNoSubscribers(t, b, "test1.event1")
+		h := subscribePattern(t, b, pattern, noop)
+		assertHandlerPattern(t, h, pattern)
+		assertHasSubscribers(t, b, "test.event1")
+		assertHasSubscribers(t, b, "test.event2")
+		assertHasNoSubscribers(t, b, "test1.event1")
+	})
+	t.Run("All", func(t *testing.T) {
+		pattern := WildcardPattern("*")
+		assertHasNoSubscribers(t, b, "test.event1")
+		assertHasNoSubscribers(t, b, "test.event2")
+		assertHasNoSubscribers(t, b, "test1.event1")
+		h := subscribePattern(t, b, pattern, noop)
+		assertHandlerPattern(t, h, pattern)
+		assertHasSubscribers(t, b, "test.event1")
+		assertHasSubscribers(t, b, "test.event2")
+		assertHasSubscribers(t, b, "test1.event1")
+	})
+	t.Run("NoWildcard", func(t *testing.T) {
+		pattern := WildcardPattern("test")
+		assertHasNoSubscribers(t, b, "test")
+		assertHasNoSubscribers(t, b, "test.event1")
+		assertHasNoSubscribers(t, b, "test.event2")
+		h := subscribePattern(t, b, pattern, noop)
+		if _, ok := pattern.(EventName); !ok {
+			t.Error("wildcard pattern with no wildcard should be an EventName")
+		}
+		assertHandlerPattern(t, h, pattern)
+		assertHasSubscribers(t, b, "test")
+		assertHasNoSubscribers(t, b, "test.event1")
+		assertHasNoSubscribers(t, b, "test.event2")
+	})
 }
 
 func TestSubscribeRegexPattern(t *testing.T) {
