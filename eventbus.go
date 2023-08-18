@@ -202,16 +202,11 @@ func (h *Handler) close(f func()) {
 		return
 	}
 	h.closed = true
-	var f2 func()
-	if f == nil {
-		f2 = h.opts.unsubscribedHandler
-	} else {
-		f2 = func() {
-			if h.opts.unsubscribedHandler != nil {
-				h.opts.unsubscribedHandler()
-			}
-			f()
+	f2 := func() {
+		if h.opts.unsubscribedHandler != nil {
+			h.opts.unsubscribedHandler()
 		}
+		f()
 	}
 	if h.ch == nil {
 		if f2 != nil {
