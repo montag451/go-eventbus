@@ -70,7 +70,7 @@ func assertHandlerName(t testing.TB, h *Handler, expected string) {
 func assertHandlerQueueSize(t testing.TB, h *Handler, expected int) {
 	t.Helper()
 	if h.QueueSize() != expected {
-		t.Errorf("bad handler queue size: got %d, expected %q", h.QueueSize(), expected)
+		t.Errorf("bad handler queue size: got %d, expected %d", h.QueueSize(), expected)
 	}
 }
 
