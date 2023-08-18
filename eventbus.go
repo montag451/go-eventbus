@@ -93,6 +93,9 @@ type event struct {
 	wg *sync.WaitGroup
 }
 
+// DroppedEventName is the name of the [Dropped] event
+const DroppedEventName = EventName("_bus.dropped")
+
 // Dropped is the event published internally by the bus to signal that
 // an event has been dropped. This event occurs only when an event is
 // published asynchronously and the handler queue is full. Dropped
@@ -104,10 +107,6 @@ type Dropped struct {
 	Event     Event
 }
 
-const DroppedEventName = EventName("_bus.dropped")
-
-// Name returns the string "_bus.dropped" which is the name of the
-// Dropped event.
 func (Dropped) Name() EventName {
 	return DroppedEventName
 }
