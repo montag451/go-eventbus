@@ -274,12 +274,21 @@ func TestPublish(t *testing.T) {
 	})
 	t.Run("CallOnce", func(t *testing.T) {
 		var n uint64
-		h := subscribePattern(t, b, WildcardPattern("test.*"), func(e Event, t time.Time) {
+		h := subscribe(t, b, testEvent1.Name(), func(e Event, t time.Time) {
 			atomic.AddUint64(&n, 1)
 		}, CallOnce())
 		b.PublishSync(testEvent1)
 		b.PublishSync(testEvent1)
 		b.Unsubscribe(h)
-		assertNumberOfEvents(t, atomic.LoadUint64(&n), 1)
+		var wg sync.WaitGroup
+		h = subscribe(t, b, testEvent1.Name(), func(e Event, t time.Time) {
+			atomic.AddUint64(&n, 1)
+		}, CallOnce(), WithUnsubscribedHandler(wg.Done))
+		wg.Add(1)
+		b.PublishAsync(testEvent1)
+		b.PublishSync(testEvent1)
+		b.Unsubscribe(h)
+		wg.Wait()
+		assertNumberOfEvents(t, atomic.LoadUint64(&n), 2)
 	})
 }
