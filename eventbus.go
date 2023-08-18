@@ -574,11 +574,6 @@ func (b *Bus) publish(e Event, synch bool) error {
 		switch {
 		case ok && !synch, err != nil:
 			wg.Done()
-		case !ok && h.opts.callOnce:
-			// Should not happen as a handler queue size is at least
-			// one and a CallOnce handler only handles at most one
-			// event
-			panic("unable to queue an event for a CallOnce handler")
 		case !ok:
 			busyHandlers = append(busyHandlers, h)
 		}
