@@ -123,15 +123,16 @@ type HandlerFunc func(e Event, t time.Time)
 
 // Handler represents a subscription to some events.
 type Handler struct {
-	mu      sync.Mutex
-	opts    subscribeOptions
-	closed  bool
-	fn      HandlerFunc
-	p       EventNamePattern
-	waiters sync.WaitGroup
-	ch      chan event
-	stop    chan struct{}
-	done    chan struct{}
+	mu            sync.Mutex
+	opts          subscribeOptions
+	closed        bool
+	fn            HandlerFunc
+	p             EventNamePattern
+	waiters       sync.WaitGroup
+	queuedHandler func() // only used for testing purpose
+	ch            chan event
+	stop          chan struct{}
+	done          chan struct{}
 }
 
 // Pattern returns the handler pattern.
@@ -168,6 +169,12 @@ func (h *Handler) init() {
 	go h.processEvents()
 }
 
+func (h *Handler) setQueuedHandler(f func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.queuedHandler = f
+}
+
 func (h *Handler) publish(e event, wait bool) (published bool, err error) {
 	h.mu.Lock()
 	if h.closed {
@@ -175,6 +182,7 @@ func (h *Handler) publish(e event, wait bool) (published bool, err error) {
 		err = errHandlerClosed
 		return
 	}
+	qh := h.queuedHandler
 	if wait {
 		h.waiters.Add(1)
 		defer h.waiters.Done()
@@ -191,6 +199,9 @@ func (h *Handler) publish(e event, wait bool) (published bool, err error) {
 		default:
 		}
 		h.mu.Unlock()
+	}
+	if qh != nil && published {
+		qh()
 	}
 	return
 }

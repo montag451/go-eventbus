@@ -88,6 +88,13 @@ func assertHandlerCallOnce(t testing.TB, h *Handler, expected bool) {
 	}
 }
 
+func assertHandlerPendingEvents(t testing.TB, h *Handler, expected int) {
+	t.Helper()
+	if h.PendingEvents() != expected {
+		t.Errorf("handler has %d pending events, expected %d", h.PendingEvents(), expected)
+	}
+}
+
 func assertNumberOfEvents(t testing.TB, got uint64, expected uint64) {
 	t.Helper()
 	if got != expected {
@@ -270,15 +277,28 @@ func TestPublish(t *testing.T) {
 	})
 	t.Run("NoDrain", func(t *testing.T) {
 		var n uint64
+		var wg sync.WaitGroup
+		received := make(chan struct{})
+		queued := make(chan struct{})
 		wait := make(chan struct{})
-		defer close(wait)
-		h := subscribePattern(t, b, WildcardPattern("test.*"), func(e Event, t time.Time) {
+		h := subscribe(t, b, testEvent1.Name(), func(e Event, t time.Time) {
+			received <- struct{}{}
 			<-wait
 			atomic.AddUint64(&n, 1)
-		}, NoDrain())
-		b.PublishAsync(testEvent1)
+		}, NoDrain(), WithUnsubscribedHandler(wg.Done))
+		wg.Add(1)
+		b.Publish(testEvent1)
+		<-received
+		h.setQueuedHandler(func() { close(queued) })
+		go func() {
+			b.PublishSync(testEvent1)
+		}()
+		<-queued
+		assertHandlerPendingEvents(t, h, 1)
 		b.Unsubscribe(h)
-		assertNumberOfEvents(t, atomic.LoadUint64(&n), 0)
+		close(wait)
+		wg.Wait()
+		assertNumberOfEvents(t, atomic.LoadUint64(&n), 1)
 	})
 	t.Run("CallOnce", func(t *testing.T) {
 		var n uint64
