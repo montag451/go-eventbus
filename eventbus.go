@@ -152,7 +152,7 @@ func (h *Handler) QueueSize() int {
 // PendingEvents returns the number of events in the handler queue.
 func (h *Handler) PendingEvents() int {
 	h.mu.Lock()
-	defer h.mu.Lock()
+	defer h.mu.Unlock()
 	return len(h.ch)
 }
 
