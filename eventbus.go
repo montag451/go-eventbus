@@ -517,7 +517,7 @@ func (b *Bus) unsubscribe(h *Handler) {
 		delete(handlers, h)
 	}
 	b.closeWg.Add(1)
-	go h.close(b.closeWg.Done)
+	h.close(b.closeWg.Done)
 }
 
 func (b *Bus) checkNewEvent(name EventName) {
