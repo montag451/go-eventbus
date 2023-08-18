@@ -178,6 +178,14 @@ func TestSubscribeOptions(t *testing.T) {
 	assertHandlerCallOnce(t, h, true)
 }
 
+func TestSubscribeInvalidQueueSize(t *testing.T) {
+	b := newTestBus(t)
+	h := subscribe(t, b, "", noop, WithQueueSize(0))
+	assertHandlerQueueSize(t, h, 1)
+	h = subscribe(t, b, "", noop, WithQueueSize(-1))
+	assertHandlerQueueSize(t, h, 1)
+}
+
 func TestUnsubscribe(t *testing.T) {
 	b := newTestBus(t)
 	name := EventName("test.event1")
