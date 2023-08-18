@@ -590,9 +590,6 @@ func (b *Bus) publishAsync(e event) {
 	b.checkNewEvent(name)
 	for h := range b.events[name] {
 		h.init()
-		if h.opts.callOnce {
-			b.unsubscribe(h)
-		}
 		if ok, err := h.publish(e, false); !ok && err == nil {
 			if _, ok := e.e.(Dropped); !ok {
 				b.publishAsync(event{
@@ -600,6 +597,11 @@ func (b *Bus) publishAsync(e event) {
 					e: Dropped{h, e.t, e.e},
 				})
 			}
+		}
+		if h.opts.callOnce {
+			// Here the event is in the queue of the handler so it is
+			// safe to unsubscribe and to close the handler
+			b.unsubscribe(h)
 		}
 	}
 }
