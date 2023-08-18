@@ -20,12 +20,14 @@ import (
 	"time"
 )
 
-// EventNamePattern is the interface implemented by all event patterns
+// EventNamePattern is the interface implemented by all event patterns.
 type EventNamePattern interface {
 	Match(n EventName) bool
 }
 
-// EventName represents the name of an event.
+// EventName represents the name of an event. It implements
+// [EventNamePattern] so it can be used as a pattern in a call to
+// [Bus.Subscribe].
 type EventName string
 
 func (p EventName) Match(n EventName) bool {
@@ -414,17 +416,10 @@ func (b *Bus) Close() {
 	}()
 }
 
-// Subscribe subscribes to all events matching the given event
-// name. It returns a [Handler] instance representing the
+// Subscribe subscribes to all events matching the given event name
+// pattern. It returns a [Handler] instance representing the
 // subscription.
-func (b *Bus) Subscribe(n EventName, fn HandlerFunc, options ...SubscribeOption) (*Handler, error) {
-	return b.SubscribePattern(n, fn, options...)
-}
-
-// SubscribePattern subscribes to all events matching the given event
-// name pattern. It returns a [Handler] instance representing the
-// subscription.
-func (b *Bus) SubscribePattern(p EventNamePattern, fn HandlerFunc, options ...SubscribeOption) (*Handler, error) {
+func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...SubscribeOption) (*Handler, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {

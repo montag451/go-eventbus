@@ -38,7 +38,7 @@ func Example() {
 	b := eventbus.New(eventbus.WithClosedHandler(func() {
 		close(closed)
 	}))
-	b.SubscribePattern(eventbus.WildcardPattern("process.*"), func(e eventbus.Event, t time.Time) {
+	b.Subscribe(eventbus.WildcardPattern("process.*"), func(e eventbus.Event, t time.Time) {
 		switch e := e.(type) {
 		case ProcessStarted:
 			fmt.Printf("Process %d started\n", e.Pid)

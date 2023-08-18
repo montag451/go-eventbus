@@ -34,12 +34,8 @@ func newTestBus(t testing.TB) *Bus {
 	return b
 }
 
-func subscribe(t testing.TB, b *Bus, n EventName, f HandlerFunc, opts ...SubscribeOption) *Handler {
-	return subscribePattern(t, b, n, f, opts...)
-}
-
-func subscribePattern(t testing.TB, b *Bus, p EventNamePattern, f HandlerFunc, opts ...SubscribeOption) *Handler {
-	h, _ := b.SubscribePattern(p, f, opts...)
+func subscribe(t testing.TB, b *Bus, p EventNamePattern, f HandlerFunc, opts ...SubscribeOption) *Handler {
+	h, _ := b.Subscribe(p, f, opts...)
 	t.Cleanup(func() {
 		b.Unsubscribe(h)
 	})
@@ -131,7 +127,7 @@ func TestSubscribeWildcardPattern(t *testing.T) {
 		assertHasNoSubscribers(t, b, "test.event1")
 		assertHasNoSubscribers(t, b, "test.event2")
 		assertHasNoSubscribers(t, b, "test1.event1")
-		h := subscribePattern(t, b, pattern, noop)
+		h := subscribe(t, b, pattern, noop)
 		assertHandlerPattern(t, h, pattern)
 		assertHasSubscribers(t, b, "test.event1")
 		assertHasSubscribers(t, b, "test.event2")
@@ -142,7 +138,7 @@ func TestSubscribeWildcardPattern(t *testing.T) {
 		assertHasNoSubscribers(t, b, "test.event1")
 		assertHasNoSubscribers(t, b, "test.event2")
 		assertHasNoSubscribers(t, b, "test1.event1")
-		h := subscribePattern(t, b, pattern, noop)
+		h := subscribe(t, b, pattern, noop)
 		assertHandlerPattern(t, h, pattern)
 		assertHasSubscribers(t, b, "test.event1")
 		assertHasSubscribers(t, b, "test.event2")
@@ -153,7 +149,7 @@ func TestSubscribeWildcardPattern(t *testing.T) {
 		assertHasNoSubscribers(t, b, "test")
 		assertHasNoSubscribers(t, b, "test.event1")
 		assertHasNoSubscribers(t, b, "test.event2")
-		h := subscribePattern(t, b, pattern, noop)
+		h := subscribe(t, b, pattern, noop)
 		if _, ok := pattern.(EventName); !ok {
 			t.Error("wildcard pattern with no wildcard should be an EventName")
 		}
@@ -167,7 +163,7 @@ func TestSubscribeWildcardPattern(t *testing.T) {
 func TestSubscribeRegexPattern(t *testing.T) {
 	b := newTestBus(t)
 	pattern := RegexPattern(regexp.MustCompile(`test\.event\d+$`))
-	h := subscribePattern(t, b, pattern, noop)
+	h := subscribe(t, b, pattern, noop)
 	assertHasSubscribers(t, b, `test.event1`)
 	assertHasSubscribers(t, b, `_test.event42`)
 	assertHasNoSubscribers(t, b, `test.event`)
@@ -177,7 +173,7 @@ func TestSubscribeRegexPattern(t *testing.T) {
 
 func TestSubscribeDefaultOptions(t *testing.T) {
 	b := newTestBus(t)
-	h := subscribe(t, b, "", noop)
+	h := subscribe(t, b, testEvent1.Name(), noop)
 	assertHandlerName(t, h, "")
 	assertHandlerQueueSize(t, h, defaultQueueSize)
 	assertHandlerDrain(t, h, true)
@@ -192,7 +188,7 @@ func TestSubscribeOptions(t *testing.T) {
 		NoDrain(),
 		CallOnce(),
 	}
-	h := subscribe(t, b, "", noop, opts...)
+	h := subscribe(t, b, testEvent1.Name(), noop, opts...)
 	assertHandlerName(t, h, "foo")
 	assertHandlerQueueSize(t, h, 42)
 	assertHandlerDrain(t, h, false)
@@ -201,19 +197,18 @@ func TestSubscribeOptions(t *testing.T) {
 
 func TestSubscribeInvalidQueueSize(t *testing.T) {
 	b := newTestBus(t)
-	h := subscribe(t, b, "", noop, WithQueueSize(0))
+	h := subscribe(t, b, testEvent1.Name(), noop, WithQueueSize(0))
 	assertHandlerQueueSize(t, h, 1)
-	h = subscribe(t, b, "", noop, WithQueueSize(-1))
+	h = subscribe(t, b, testEvent1.Name(), noop, WithQueueSize(-1))
 	assertHandlerQueueSize(t, h, 1)
 }
 
 func TestUnsubscribe(t *testing.T) {
 	b := newTestBus(t)
-	name := EventName("test.event1")
-	h := subscribe(t, b, name, noop)
-	assertHasSubscribers(t, b, name)
+	h := subscribe(t, b, testEvent1.Name(), noop)
+	assertHasSubscribers(t, b, testEvent1.Name())
 	b.Unsubscribe(h)
-	assertHasNoSubscribers(t, b, name)
+	assertHasNoSubscribers(t, b, testEvent1.Name())
 }
 
 func TestClose(t *testing.T) {
@@ -221,8 +216,6 @@ func TestClose(t *testing.T) {
 	b.Close()
 	b.Close() // to test the idempotency of Close
 	_, err := b.Subscribe(testEvent1.Name(), noop)
-	assertBusClosedError(t, err)
-	_, err = b.SubscribePattern(testEvent1.Name(), noop)
 	assertBusClosedError(t, err)
 	assertBusClosedError(t, b.Unsubscribe(nil))
 	_, err = b.HasSubscribers(testEvent1.Name())
@@ -300,14 +293,14 @@ func TestDrop(t *testing.T) {
 	var n uint64
 	received := make(chan struct{})
 	wait := make(chan struct{})
-	h1 := subscribePattern(t, b, WildcardPattern("test.*"), func(e Event, t time.Time) {
-		atomic.AddUint64(&n, 1)
+	h1 := subscribe(t, b, WildcardPattern("test.*"), func(e Event, t time.Time) {
 		received <- struct{}{}
 		<-wait
+		atomic.AddUint64(&n, 1)
 	}, WithQueueSize(1), WithUnsubscribedHandler(wg.Done))
 	wg.Add(1)
 	var dropped Event
-	h2 := subscribe(t, b, "_bus.dropped", func(e Event, t time.Time) {
+	h2 := subscribe(t, b, DroppedEventName, func(e Event, t time.Time) {
 		dropped = e.(Dropped).Event
 	}, WithUnsubscribedHandler(wg.Done))
 	wg.Add(1)
