@@ -1,6 +1,7 @@
 package eventbus
 
 import (
+	"errors"
 	"regexp"
 	"sync"
 	"sync/atomic"
@@ -102,6 +103,13 @@ func assertNumberOfEvents(t testing.TB, got uint64, expected uint64) {
 	}
 }
 
+func assertBusClosedError(t testing.TB, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrBusClosed) {
+		t.Errorf("unexpected error %q (%[1]T), expected %q (%[2]T)", err, ErrBusClosed)
+	}
+}
+
 func TestSubscribeNoPattern(t *testing.T) {
 	b := newTestBus(t)
 	name := EventName("test.event1")
@@ -200,6 +208,22 @@ func TestUnsubscribe(t *testing.T) {
 	assertHasSubscribers(t, b, name)
 	b.Unsubscribe(h)
 	assertHasNoSubscribers(t, b, name)
+}
+
+func TestClose(t *testing.T) {
+	b := New()
+	b.Close()
+	b.Close() // to test the idempotency of Close
+	_, err := b.Subscribe(testEvent1.Name(), noop)
+	assertBusClosedError(t, err)
+	_, err = b.SubscribePattern(testEvent1.Name(), noop)
+	assertBusClosedError(t, err)
+	assertBusClosedError(t, b.Unsubscribe(nil))
+	_, err = b.HasSubscribers(testEvent1.Name())
+	assertBusClosedError(t, err)
+	assertBusClosedError(t, b.Publish(testEvent1))
+	assertBusClosedError(t, b.PublishSync(testEvent1))
+	assertBusClosedError(t, b.PublishAsync(testEvent1))
 }
 
 func TestPublish(t *testing.T) {
