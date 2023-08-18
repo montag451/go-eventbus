@@ -272,6 +272,28 @@ func TestPublishAsync(t *testing.T) {
 	assertNumberOfEvents(t, &n, 2)
 }
 
+func TestQueueFull(t *testing.T) {
+	b := newTestBus(t)
+	unsubscribed := make(chan struct{})
+	var n uint64
+	wait := make(chan struct{})
+	h := subscribe(t, b, testEvent1.Name(), func(e Event, t time.Time) {
+		<-wait
+		atomic.AddUint64(&n, 1)
+	}, WithQueueSize(1), WithUnsubscribedHandler(func() {
+		close(unsubscribed)
+	}))
+	b.Publish(testEvent1)
+	b.Publish(testEvent1)
+	h.setQueueFullHandler(func() {
+		close(wait)
+	})
+	b.Publish(testEvent1)
+	b.Unsubscribe(h)
+	<-unsubscribed
+	assertNumberOfEvents(t, &n, 3)
+}
+
 func TestDrop(t *testing.T) {
 	b := newTestBus(t)
 	var wg sync.WaitGroup

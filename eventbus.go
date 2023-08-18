@@ -122,16 +122,17 @@ type HandlerFunc func(e Event, t time.Time)
 
 // Handler represents a subscription to some events.
 type Handler struct {
-	mu            sync.Mutex
-	opts          subscribeOptions
-	closed        bool
-	fn            HandlerFunc
-	p             EventNamePattern
-	waiters       sync.WaitGroup
-	queuedHandler func() // only used for testing purpose
-	ch            chan event
-	stop          chan struct{}
-	done          chan struct{}
+	mu               sync.Mutex
+	opts             subscribeOptions
+	closed           bool
+	fn               HandlerFunc
+	p                EventNamePattern
+	waiters          sync.WaitGroup
+	queueFullHandler func() // only used for testing purpose
+	queuedHandler    func() // only used for testing purpose
+	ch               chan event
+	stop             chan struct{}
+	done             chan struct{}
 }
 
 // Pattern returns the handler pattern.
@@ -168,6 +169,12 @@ func (h *Handler) init() {
 	go h.processEvents()
 }
 
+func (h *Handler) setQueueFullHandler(f func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.queueFullHandler = f
+}
+
 func (h *Handler) setQueuedHandler(f func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -181,15 +188,26 @@ func (h *Handler) publish(e event, wait bool) (published bool, err error) {
 		err = errHandlerClosed
 		return
 	}
+	qfh := h.queueFullHandler
 	qh := h.queuedHandler
 	if wait {
 		h.waiters.Add(1)
 		defer h.waiters.Done()
 		h.mu.Unlock()
-		select {
-		case h.ch <- e:
-			published = true
-		case <-h.stop:
+		if qfh != nil {
+			select {
+			case h.ch <- e:
+				published = true
+			default:
+				qfh()
+			}
+		}
+		if !published {
+			select {
+			case h.ch <- e:
+				published = true
+			case <-h.stop:
+			}
 		}
 	} else {
 		select {
