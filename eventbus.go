@@ -347,7 +347,7 @@ func CallOnce() SubscribeOption {
 	}
 }
 
-// ErrClosed is the error returned by all bus methods (except
+// ErrBusClosed is the error returned by all bus methods (except
 // [Bus.Close]) if called on a closed bus. It is the only error
 // returned by this package.
 var ErrBusClosed = errors.New("bus is closed")
