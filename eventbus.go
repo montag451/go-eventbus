@@ -332,16 +332,16 @@ func WithUnsubscribedHandler(f func()) SubscribeOption {
 	}
 }
 
-// NoDrain prevents [Bus.Close] and [Bus.Unsubscribe] to drain the
+// WithNoDrain prevents [Bus.Close] and [Bus.Unsubscribe] to drain the
 // handler event queue.
-func NoDrain() SubscribeOption {
+func WithNoDrain() SubscribeOption {
 	return func(opts *subscribeOptions) {
 		opts.drain = false
 	}
 }
 
-// CallOnce ensures that the handler will be called only once
-func CallOnce() SubscribeOption {
+// WithCallOnce ensures that the handler will be called only once
+func WithCallOnce() SubscribeOption {
 	return func(opts *subscribeOptions) {
 		opts.callOnce = true
 	}
@@ -396,8 +396,8 @@ func New(options ...BusOption) *Bus {
 
 // Close closes the event bus and starts draining, in the background,
 // the event queue of all handlers that has not been registered with
-// the [NoDrain] option. When all the handlers have been drained, the
-// callback set with [WithClosedHandler] is called.
+// the [WithNoDrain] option. When all the handlers have been drained,
+// the callback set with [WithClosedHandler] is called.
 func (b *Bus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -447,8 +447,8 @@ func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...Subscribe
 // Unsubscribe unsubscribes the given handler for all events matching
 // the handler pattern and starts draining, in the background, the
 // handler event queue if the given handler has not been registered
-// with the [NoDrain] option. When the handler has been drained, the
-// callback set with [WithUnsubscribedHandler] is called.
+// with the [WithNoDrain] option. When the handler has been drained,
+// the callback set with [WithUnsubscribedHandler] is called.
 func (b *Bus) Unsubscribe(h *Handler) error {
 	b.mu.Lock()
 	if b.closed {

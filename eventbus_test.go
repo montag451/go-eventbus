@@ -185,8 +185,8 @@ func TestSubscribeOptions(t *testing.T) {
 	opts := []SubscribeOption{
 		WithName("foo"),
 		WithQueueSize(42),
-		NoDrain(),
-		CallOnce(),
+		WithNoDrain(),
+		WithCallOnce(),
 	}
 	h := subscribe(t, b, testEvent1.Name(), noop, opts...)
 	assertHandlerName(t, h, "foo")
@@ -330,7 +330,7 @@ func TestNoDrain(t *testing.T) {
 		received <- struct{}{}
 		<-wait
 		atomic.AddUint64(&n, 1)
-	}, NoDrain(), WithUnsubscribedHandler(wg.Done))
+	}, WithNoDrain(), WithUnsubscribedHandler(wg.Done))
 	wg.Add(1)
 	b.Publish(testEvent1)
 	<-received
@@ -349,12 +349,12 @@ func TestNoDrain(t *testing.T) {
 func TestCallOnce(t *testing.T) {
 	b := newTestBus(t)
 	var n uint64
-	h := subscribe(t, b, testEvent1.Name(), countEvents(&n), CallOnce())
+	h := subscribe(t, b, testEvent1.Name(), countEvents(&n), WithCallOnce())
 	b.PublishSync(testEvent1)
 	b.PublishSync(testEvent1)
 	b.Unsubscribe(h)
 	var wg sync.WaitGroup
-	h = subscribe(t, b, testEvent1.Name(), countEvents(&n), CallOnce(), WithUnsubscribedHandler(wg.Done))
+	h = subscribe(t, b, testEvent1.Name(), countEvents(&n), WithCallOnce(), WithUnsubscribedHandler(wg.Done))
 	wg.Add(1)
 	b.PublishAsync(testEvent1)
 	b.PublishSync(testEvent1)
