@@ -451,12 +451,11 @@ func (b *Bus) Subscribe(p EventNamePattern, fn HandlerFunc, options ...Subscribe
 // the callback set with [WithUnsubscribedHandler] is called.
 func (b *Bus) Unsubscribe(h *Handler) error {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.closed {
-		b.mu.Unlock()
 		return ErrBusClosed
 	}
 	b.unsubscribe(h)
-	b.mu.Unlock()
 	return nil
 }
 
